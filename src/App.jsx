@@ -1,51 +1,83 @@
 import { useState, useRef, useEffect, useCallback, memo } from "react";
 
-// Storage adapter: usa localStorage en Vercel, window.storage en Claude artifacts
+// ── SUPABASE CONFIG ─────────────────────────────────────────────
+const SUPA_URL = "https://mvrznqpvreeskbmbaclg.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12cnpucXB2cmVlc2tibWJhY2xnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTE4NjUsImV4cCI6MjA5MTU4Nzg2NX0.rOn31fHnUhMaAsAMUgEUwIwOMFNhLLLnW4L8rMNIGcE";
+const SH = () => ({ "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY });
+
+// Storage adapter: Supabase (cloud) con fallback a localStorage
 const storage = {
     get: async (key) => {
-        if (typeof window !== 'undefined' && storage.get) return storage.get(key);
+        try {
+            const r = await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key) + "&select=value&limit=1", { headers: SH() });
+            if (r.ok) { const d = await r.json(); if (d.length > 0) return { value: d[0].value }; }
+        } catch { }
         try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
     },
     set: async (key, value) => {
-        if (typeof window !== 'undefined' && storage.set) return storage.set(key, value);
-        try { localStorage.setItem(key, value); return { value }; } catch { return null; }
+        try {
+            await fetch(SUPA_URL + "/rest/v1/bcm_storage", {
+                method: "POST", headers: { ...SH(), "Prefer": "resolution=merge-duplicates" },
+                body: JSON.stringify({ key, value })
+            });
+        } catch { }
+        try { localStorage.setItem(key, value); } catch { }
+        return { value };
     },
     delete: async (key) => {
-        if (typeof window !== 'undefined' && storage.delete) return storage.delete(key);
-        try { localStorage.removeItem(key); return { deleted: true }; } catch { return null; }
+        try { await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key), { method: "DELETE", headers: SH() }); } catch { }
+        try { localStorage.removeItem(key); } catch { }
+        return { deleted: true };
     },
     list: async (prefix) => {
-        if (typeof window !== 'undefined' && storage.list) return storage.list(prefix);
         try {
-            const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
-            return { keys };
-        } catch { return { keys: [] }; }
+            const url = prefix ? SUPA_URL + "/rest/v1/bcm_storage?key=like." + encodeURIComponent(prefix) + "*&select=key" : SUPA_URL + "/rest/v1/bcm_storage?select=key";
+            const r = await fetch(url, { headers: SH() });
+            if (r.ok) { const d = await r.json(); return { keys: d.map(x => x.key) }; }
+        } catch { }
+        try { return { keys: Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix)) }; } catch { return { keys: [] }; }
     }
 };
 
 // ── CÓDIGO FUENTE EMBEBIDO (para exportar JSX publicable) ─────────
 const __SOURCE_CODE__ = `import { useState, useRef, useEffect, useCallback, memo } from "react";
 
-// Storage adapter: usa localStorage en Vercel, window.storage en Claude artifacts
+// ── SUPABASE CONFIG ─────────────────────────────────────────────
+const SUPA_URL = "https://mvrznqpvreeskbmbaclg.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12cnpucXB2cmVlc2tibWJhY2xnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTE4NjUsImV4cCI6MjA5MTU4Nzg2NX0.rOn31fHnUhMaAsAMUgEUwIwOMFNhLLLnW4L8rMNIGcE";
+const SH = () => ({ "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY });
+
+// Storage adapter: Supabase (cloud) con fallback a localStorage
 const storage = {
     get: async (key) => {
-        if (typeof window !== 'undefined' && storage.get) return storage.get(key);
+        try {
+            const r = await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key) + "&select=value&limit=1", { headers: SH() });
+            if (r.ok) { const d = await r.json(); if (d.length > 0) return { value: d[0].value }; }
+        } catch { }
         try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
     },
     set: async (key, value) => {
-        if (typeof window !== 'undefined' && storage.set) return storage.set(key, value);
-        try { localStorage.setItem(key, value); return { value }; } catch { return null; }
+        try {
+            await fetch(SUPA_URL + "/rest/v1/bcm_storage", {
+                method: "POST", headers: { ...SH(), "Prefer": "resolution=merge-duplicates" },
+                body: JSON.stringify({ key, value })
+            });
+        } catch { }
+        try { localStorage.setItem(key, value); } catch { }
+        return { value };
     },
     delete: async (key) => {
-        if (typeof window !== 'undefined' && storage.delete) return storage.delete(key);
-        try { localStorage.removeItem(key); return { deleted: true }; } catch { return null; }
+        try { await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key), { method: "DELETE", headers: SH() }); } catch { }
+        try { localStorage.removeItem(key); } catch { }
+        return { deleted: true };
     },
     list: async (prefix) => {
-        if (typeof window !== 'undefined' && storage.list) return storage.list(prefix);
         try {
-            const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
-            return { keys };
-        } catch { return { keys: [] }; }
+            const url = prefix ? SUPA_URL + "/rest/v1/bcm_storage?key=like." + encodeURIComponent(prefix) + "*&select=key" : SUPA_URL + "/rest/v1/bcm_storage?select=key";
+            const r = await fetch(url, { headers: SH() });
+            if (r.ok) { const d = await r.json(); return { keys: d.map(x => x.key) }; }
+        } catch { }
+        try { return { keys: Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix)) }; } catch { return { keys: [] }; }
     }
 };
 
