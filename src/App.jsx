@@ -97,7 +97,14 @@ const ROLES = ["Jefe de Obra", "Capataz", "Técnico", "Proveedor", "Contratista"
 const DOC_TYPES = [{ id: "art", label: "ART", acceptsExp: true }, { id: "antec", label: "Antecedentes", acceptsExp: false }, { id: "preoc", label: "Preocupacional", acceptsExp: true }, { id: "dni", label: "DNI", acceptsExp: false }, { id: "sicop", label: "SiCoP", acceptsExp: false }, { id: "alta", label: "Alta Temprana", acceptsExp: false }];
 const LIC_DOC_TYPES = [{ id: "planos", label: "Planos", accept: ".pdf,.png,.jpg,.dwg,.zip" }, { id: "pliego", label: "Pliego", accept: ".pdf,.doc,.docx" }, { id: "excel", label: "Excel", accept: ".xlsx,.xls,.csv,.pdf" }, { id: "otros", label: "Otros", accept: "*" }];
 const EMAIL_IA = "ia.belfastcm@gmail.com";
-const ADMIN_CREDS = [{ user: "admin", pass: "belfast2025", rol: "Administrador" }, { user: "supervisor", pass: "obra2025", rol: "Supervisor" }];
+const ADMIN_CREDS = [{ user: "admin", pass: "belfast2025", rol: "Administrador", nivel: "directivo" }, { user: "supervisor", pass: "obra2025", rol: "Supervisor", nivel: "directivo" }];
+const USERS = ADMIN_CREDS; // alias — configurable desde Más → Configuración
+function isDirectivo(user) {
+    if (!user) return false;
+    const nivel = user.nivel || '';
+    const rol = (user.rol || '').toLowerCase();
+    return nivel === 'directivo' || ['administrador', 'supervisor', 'gerente', 'director'].some(r => rol.includes(r));
+}
 
 // ── TEMA ───────────────────────────────────────────────────────────────
 const THEME_PRESETS = [
@@ -169,7 +176,27 @@ function t(cfg, key) { return cfg?.textos?.[key] || DEFAULT_TEXTOS[key] || key; 
 function getUbics(cfg) { return (cfg?.ubicaciones?.length ? cfg.ubicaciones : DEFAULT_UBICACIONES); }
 function getLabelUbic(cfg) { return cfg?.labelUbicacion || "Aeropuerto"; }
 function uid() { return Math.random().toString(36).slice(2, 9); }
-function toDataUrl(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }); }
+function toDataUrl(f, maxW = 1400) {
+    return new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            if (!f.type.startsWith('image/')) { res(e.target.result); return; }
+            const img = new Image();
+            img.onload = () => {
+                if (img.width <= maxW) { res(e.target.result); return; }
+                const c = document.createElement('canvas');
+                const ratio = maxW / img.width;
+                c.width = maxW; c.height = Math.round(img.height * ratio);
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                res(c.toDataURL('image/jpeg', 0.85));
+            };
+            img.onerror = () => res(e.target.result);
+            img.src = e.target.result;
+        };
+        reader.onerror = rej;
+        reader.readAsDataURL(f);
+    });
+}
 function getBase64(d) { return d.split(',')[1]; }
 function getMediaType(d) { const m = d.match(/data:([^;]+);/); return m ? m[1] : 'image/jpeg'; }
 async function callAI(msgs, sys, apiKey) {
@@ -293,7 +320,7 @@ function LoginModal({ titulo, onSuccess, onClose }) {
             <span style={{ fontSize: 12, color: "#15803D", fontWeight: 600 }}>Área protegida – Acceso administrativo</span>
         </div>
         <Field label="Usuario">
-            <input value={u} onChange={e => { setU(e.target.value); setErr(''); }} placeholder="admin"
+            <input value={u} onChange={e => { setU(e.target.value); setErr(''); }} placeholder="Ingresá tu usuario"
                 autoCapitalize="none" autoCorrect="off" autoComplete="username"
                 onKeyDown={e => e.key === 'Enter' && login()}
                 style={{ width: "100%", background: T.bg, border: \`1.5px solid \${err ? '#FECACA' : T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} />
@@ -318,16 +345,6 @@ function LoginModal({ titulo, onSuccess, onClose }) {
             {err}
         </div>}
         <PBtn full onClick={login}>Ingresar</PBtn>
-        <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Credenciales de acceso</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                {ADMIN_CREDS.map(c => (<div key={c.user} style={{ background: T.card, border: \`1px solid \${T.border}\`, borderRadius: 8, padding: "7px 10px" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent,#1D4ED8)" }}>{c.rol}</div>
-                    <div style={{ fontSize: 10, color: T.sub, marginTop: 2 }}>Usuario: <strong>{c.user}</strong></div>
-                    <div style={{ fontSize: 10, color: T.sub }}>Clave: <strong>{c.pass}</strong></div>
-                </div>))}
-            </div>
-        </div>
     </Sheet>);
 }
 
@@ -342,7 +359,7 @@ const NAV_DEFS = [
 function BottomNav({ view, setView, alerts, cfg }) {
     return (<nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.card, borderTop: \`1px solid \${T.border}\`, display: "flex", padding: "6px 0 max(8px,env(safe-area-inset-bottom))", zIndex: 100, boxShadow: "0 -2px 16px rgba(0,0,0,.06)" }}>
         {NAV_DEFS.map(n => {
-            const active = view === n.id; const badge = n.id === "dashboard" && alerts.filter(a => a.prioridad === "alta").length > 0; const label = t(cfg, n.tk); return (
+            const active = view === n.id; const badge = n.id === "dashboard" && alerts.length > 0; const label = t(cfg, n.tk); return (
                 <button key={n.id} onClick={() => setView(n.id)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: "none", border: "none", color: n.id === "cargar" ? "#fff" : active ? "var(--accent,#1D4ED8)" : T.muted, padding: "4px 0", position: "relative" }}>
                     {n.id === "cargar" ? <div style={{ width: 46, height: 46, borderRadius: "50%", background: "var(--accent,#1D4ED8)", display: "flex", alignItems: "center", justifyContent: "center", marginTop: -16, boxShadow: "0 4px 14px rgba(0,0,0,.25)", border: \`3px solid \${T.card}\` }}>{n.icon}</div> : n.icon}
                     <span style={{ fontSize: 9, fontWeight: active ? 700 : 500, color: n.id === "cargar" ? "var(--accent,#1D4ED8)" : undefined }}>{label}</span>
@@ -353,7 +370,7 @@ function BottomNav({ view, setView, alerts, cfg }) {
     </nav>);
 }
 
-function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg }) {
+function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg, customIcons = {} }) {
     const UBICS = getUbics(cfg);
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <div style={{ background: T.navy, padding: "16px 18px 20px" }}>
@@ -361,7 +378,7 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
             <div style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>{t(cfg, 'dash_titulo')}</div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>{new Date().toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" })}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginTop: 16 }}>
-                {[{ l: t(cfg, 'dash_licitaciones'), v: lics.filter(l => !["adjudicada", "descartada"].includes(l.estado)).length, c: "#60A5FA" }, { l: t(cfg, 'dash_obras_activas'), v: obras.filter(o => o.estado === "curso").length, c: "#34D399" }, { l: t(cfg, 'dash_alertas'), v: alerts.filter(a => a.prioridad === "alta").length, c: "#FBBF24" }, { l: t(cfg, 'dash_personal'), v: personal.length, c: "#A78BFA" }].map(k => (
+                {[{ l: t(cfg, 'dash_licitaciones'), v: lics.filter(l => !["adjudicada", "descartada"].includes(l.estado)).length, c: "#60A5FA" }, { l: t(cfg, 'dash_obras_activas'), v: obras.filter(o => o.estado === "curso").length, c: "#34D399" }, { l: t(cfg, 'dash_alertas'), v: alerts.length, c: "#FBBF24" }, { l: t(cfg, 'dash_personal'), v: personal.length, c: "#A78BFA" }].map(k => (
                     <div key={k.l} style={{ background: "rgba(255,255,255,.08)", borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
                         <div style={{ fontSize: 22, fontWeight: 800, color: k.c }}>{k.v}</div>
                         <div style={{ fontSize: 9, color: "rgba(255,255,255,.5)", marginTop: 2, lineHeight: 1.3 }}>{k.l}</div>
@@ -408,15 +425,13 @@ function formatMonto(val) {
 function parseMonto(val) { return val.replace(/[^\\d]/g, ''); }
 
 function MontoInput({ value, onChange, placeholder }) {
-    const [display, setDisplay] = useState(value ? formatMonto(parseMonto(value)) : value || '');
-    useEffect(() => { setDisplay(value ? formatMonto(parseMonto(value)) : value || ''); }, [value]);
-    function handleChange(e) {
-        const raw = parseMonto(e.target.value);
-        const fmt = raw ? formatMonto(raw) : '';
-        setDisplay(fmt);
-        onChange(fmt);
-    }
-    return <input value={display} onChange={handleChange} placeholder={placeholder || '0 $'} style={{ width: "100%", background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} />;
+    const [editing, setEditing] = useState(false);
+    const [rawVal, setRawVal] = useState(value || '');
+    useEffect(() => { if (!editing) setRawVal(value || ''); }, [value, editing]);
+    function handleFocus() { setEditing(true); setRawVal(String(value || '').replace(/[^0-9.,]/g, '')); }
+    function handleBlur() { setEditing(false); const n = parseFloat(String(rawVal).replace(/\./g,'').replace(',','.')); const v = n ? '$' + n.toLocaleString('es-AR') : rawVal; setRawVal(v); onChange(v); }
+    function handleChange(e) { setRawVal(e.target.value); onChange(e.target.value); }
+    return <input value={rawVal} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} placeholder={placeholder || '$ 0'} inputMode="decimal" style={{ width: "100%", background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} />;
 }
 
 function DocGrid({ docs, onUpload, onRemove, refs, prefix }) {
@@ -717,9 +732,16 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
     const [form, setForm] = useState({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
     const [newObs, setNewObs] = useState(""); const fileRef = useRef(null); const archRef = useRef(null);
     const detail = detailId ? obras.find(o => o.id === detailId) : null;
-    function add() { if (!form.nombre.trim()) return; setObras(p => [...p, { ...form, id: uid(), avance: parseInt(form.avance) || 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]); setForm({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" }); setShowNew(false); }
+    function add() { if (!form.nombre.trim()) return; setObras(p => [...p, { ...form, id: uid(), avance: parseInt(form.avance) || 0, pagado: 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]); setForm({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" }); setShowNew(false); }
     function upd(id, patch) { setObras(p => p.map(o => o.id === id ? { ...o, ...patch } : o)); }
-    async function handleFoto(e) { if (!detail) return; for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); upd(detail.id, { fotos: [...detail.fotos, { id: uid(), url, nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") }] }); } e.target.value = ""; }
+    async function handleFoto(e) {
+        if (!detail) return;
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+        const nuevas = await Promise.all(files.map(async f => ({ id: uid(), url: await toDataUrl(f), nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") })));
+        upd(detail.id, { fotos: [...(detail.fotos || []), ...nuevas] });
+        e.target.value = "";
+    }
     async function handleArch(e) { if (!detail) return; for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); upd(detail.id, { archivos: [...detail.archivos, { id: uid(), url, nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), fecha: new Date().toLocaleDateString("es-AR") }] }); } e.target.value = ""; }
     const ec = id => OBRA_ESTADOS.find(e => e.id === id) || OBRA_ESTADOS[0];
     if (detail) {
@@ -755,6 +777,37 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
                                 <input value={detail.cierre || ''} onChange={e => upd(detail.id, { cierre: e.target.value })} placeholder="dd/mm/aa" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: T.text, padding: 0 }} />
                             </div>
                         </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                            <div style={{ background: T.bg, borderRadius: T.rsm, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 10, color: T.muted, marginBottom: 5, textTransform: "uppercase" }}>Presupuesto</div>
+                                <input value={detail.monto || ''} onChange={e => upd(detail.id, { monto: e.target.value })} placeholder="$ 0" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: T.text, padding: 0 }} />
+                            </div>
+                            <div style={{ background: detail.pagado > 0 ? "#ECFDF5" : T.bg, borderRadius: T.rsm, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 10, color: T.muted, marginBottom: 5, textTransform: "uppercase" }}>💰 Pagado</div>
+                                <input value={detail.pagado || ''} onChange={e => { const v = e.target.value.replace(/[^0-9.]/g,''); upd(detail.id, { pagado: v ? parseFloat(v) : 0 }); }} placeholder="$ 0" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: "#10B981", padding: 0 }} />
+                            </div>
+                        </div>
+                        {(detail.monto || detail.pagado > 0) && (() => {
+                            const total = parseFloat(String(detail.monto || '0').replace(/[^0-9.]/g,'')) || 0;
+                            const pagado = parseFloat(detail.pagado || 0);
+                            const saldo = total - pagado;
+                            const pct = total > 0 ? Math.round(pagado / total * 100) : 0;
+                            return total > 0 ? (
+                                <div style={{ background: pct > 80 ? "#FEF2F2" : "#F0FDF4", border: \`1px solid \${pct > 80 ? "#FECACA" : "#86EFAC"}\`, borderRadius: T.rsm, padding: "10px 12px", marginBottom: 14 }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                                        <span style={{ fontSize: 11, color: T.muted }}>Presupuesto consumido</span>
+                                        <span style={{ fontSize: 12, fontWeight: 800, color: pct > 80 ? "#EF4444" : "#10B981" }}>{pct}%</span>
+                                    </div>
+                                    <div style={{ height: 6, background: "#E2E8F0", borderRadius: 3, marginBottom: 8 }}>
+                                        <div style={{ height: 6, background: pct > 80 ? "#EF4444" : "#10B981", borderRadius: 3, width: \`\${Math.min(pct,100)}%\`, transition: "width .5s" }} />
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                                        <span style={{ color: T.muted }}>Pagado: <b style={{ color: "#10B981" }}>\${pagado.toLocaleString('es-AR')}</b></span>
+                                        <span style={{ color: T.muted }}>Saldo: <b style={{ color: saldo < 0 ? "#EF4444" : T.text }}>\${saldo.toLocaleString('es-AR')}</b></span>
+                                    </div>
+                                </div>
+                            ) : null;
+                        })()}
                         <Lbl>{t(cfg, 'obras_estado')}</Lbl>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>{OBRA_ESTADOS.map(e => (<button key={e.id} onClick={() => upd(detail.id, { estado: e.id })} style={{ padding: "9px", borderRadius: T.rsm, border: \`1.5px solid \${detail.estado === e.id ? e.color : T.border}\`, background: detail.estado === e.id ? e.bg : T.card, color: e.color, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{e.label}</button>))}</div>
                         <button onClick={() => { setObras(p => p.filter(o => o.id !== detail.id)); setDetailId(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'obras_eliminar')}</button>
@@ -776,10 +829,11 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
 
 function Personal({ personal, setPersonal, obras, cfg }) {
     const [showNew, setShowNew] = useState(false); const [expanded, setExpanded] = useState(null);
-    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "" });
+    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] });
     const fileRefs = useRef({}); const fotoRefs = useRef({}); const newFotoRef = useRef(null);
+    const [nuevaTarea, setNuevaTarea] = useState({});
     function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); }
-    function add() { if (!form.nombre.trim()) return; setPersonal(p => [...p, { ...form, id: uid(), docs: {} }]); setForm({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "" }); setShowNew(false); }
+    function add() { if (!form.nombre.trim()) return; setPersonal(p => [...p, { ...form, id: uid(), docs: {} }]); setForm({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] }); setShowNew(false); }
     function upd(id, patch) { setPersonal(p => p.map(x => x.id === id ? { ...x, ...patch } : x)); }
     async function handleDoc(pid, did, file) { const url = await toDataUrl(file); setPersonal(p => p.map(x => x.id === pid ? { ...x, docs: { ...x.docs, [did]: { nombre: file.name, url, vence: "" } } } : x)); }
     function setVence(pid, did, val) { setPersonal(p => p.map(x => x.id === pid ? { ...x, docs: { ...x.docs, [did]: { ...x.docs[did], vence: val } } } : x)); }
@@ -805,6 +859,25 @@ function Personal({ personal, setPersonal, obras, cfg }) {
                         <Lbl>Documentación</Lbl>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, margin: "6px 0 12px" }}>
                             {DOC_TYPES.map(d => { const doc = p.docs?.[d.id]; const rk = \`\${p.id}_\${d.id}\`; const exp = doc?.vence && daysSince(doc.vence) <= 5; return (<div key={d.id}><input type="file" style={{ display: "none" }} ref={el => fileRefs.current[rk] = el} onChange={e => { if (e.target.files[0]) handleDoc(p.id, d.id, e.target.files[0]); e.target.value = ""; }} />{doc ? (<div style={{ background: exp ? "#FFFBEB" : "#F0FDF4", border: \`1.5px solid \${exp ? "#FDE68A" : "#86EFAC"}\`, borderRadius: 10, padding: "9px 10px" }}><div style={{ fontSize: 10, fontWeight: 700, color: exp ? "#92400E" : "#15803D", marginBottom: 2 }}>{d.label}</div><div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{doc.nombre}</div>{d.acceptsExp && <input type="text" placeholder="Vence dd/mm/aa" value={doc.vence || ""} onChange={e => setVence(p.id, d.id, e.target.value)} style={{ width: "100%", fontSize: 10, padding: "4px 6px", border: \`1px solid \${T.border}\`, borderRadius: 6, background: "#fff", color: T.text, marginBottom: 6 }} />}<div style={{ display: "flex", gap: 4 }}><a href={doc.url} download={doc.nombre} style={{ textDecoration: "none", flex: 1 }}><button style={{ width: "100%", background: "none", border: \`1px solid \${exp ? "#FDE68A" : "#86EFAC"}\`, borderRadius: 6, padding: "4px 0", fontSize: 9, color: exp ? "#92400E" : "#15803D", fontWeight: 600, cursor: "pointer" }}>↓ Ver</button></a><button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, docs: { ...x.docs, [d.id]: null } } : x))} style={{ background: "none", border: "1px solid #FCA5A5", borderRadius: 6, padding: "4px 7px", fontSize: 9, color: "#EF4444", cursor: "pointer" }}>✕</button></div></div>) : (<button onClick={() => fileRefs.current[rk]?.click()} style={{ width: "100%", background: T.bg, border: \`1.5px dashed \${T.border}\`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 3 }}>{d.label.slice(0, 3).toUpperCase()}</div><div style={{ fontSize: 10, fontWeight: 600, color: T.sub }}>{d.label}</div></button>)}</div>); })}
+                        </div>
+                        <div style={{ marginBottom: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                <Lbl>Tareas asignadas</Lbl>
+                                <button onClick={() => {
+                                    const tarea = prompt('Nueva tarea:');
+                                    if (!tarea?.trim()) return;
+                                    setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: tarea.trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x));
+                                }} style={{ fontSize: 11, background: T.accentLight, border: \`1px solid \${T.border}\`, borderRadius: 6, padding: '3px 8px', color: T.accent, cursor: 'pointer', fontWeight: 600 }}>+ Agregar</button>
+                            </div>
+                            {(p.tareas || []).length === 0 && <div style={{ fontSize: 12, color: T.muted, fontStyle: 'italic' }}>Sin tareas asignadas</div>}
+                            {(p.tareas || []).map(t => (
+                                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: t.done ? '#F0FDF4' : '#FFFBEB', border: \`1px solid \${t.done ? '#86EFAC' : '#FDE68A'}\`, borderRadius: 8, padding: '7px 10px', marginBottom: 5 }}>
+                                    <input type="checkbox" checked={t.done} onChange={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.map(tk => tk.id === t.id ? { ...tk, done: !tk.done } : tk) } : x))} style={{ accentColor: T.accent, width: 15, height: 15, flexShrink: 0 }} />
+                                    <span style={{ flex: 1, fontSize: 12, color: T.text, textDecoration: t.done ? 'line-through' : 'none' }}>{t.txt}</span>
+                                    <span style={{ fontSize: 10, color: T.muted }}>{t.fecha}</span>
+                                    <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.filter(tk => tk.id !== t.id) } : x))} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', fontSize: 12, padding: 2 }}>✕</button>
+                                </div>
+                            ))}
                         </div>
                         <button onClick={() => { setPersonal(prev => prev.filter(x => x.id !== p.id)); if (expanded === p.id) setExpanded(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'pers_eliminar')}</button>
                     </div>)}
@@ -839,9 +912,11 @@ function CargarView({ obras, setObras, cargarState, setCargarState, apiKey }) {
             content.push({ type: 'text', text: \`Generá informe de avance para "\${obra.nombre}" (\${AIRPORTS.find(a => a.id === obra.ap)?.code}). Avance: \${obra.avance}%. \${pTxt} Incluí: estado general, trabajos observados, comparación, alertas de seguridad y recomendaciones. Formato profesional AA2000.\` });
             let reportText = '';
             if (typeof window !== 'undefined' && window.claude?.complete) {
-                const imgMsgs = content.filter(b => b.type === 'image');
                 const txtMsg = content.find(b => b.type === 'text');
-                reportText = await window.claude.complete(txtMsg?.text || 'Analizá estas fotos.');
+                const nFotos = content.filter(b => b.type === 'image').length;
+                reportText = await window.claude.complete(\`\${txtMsg?.text || 'Analizá estas fotos.'}
+
+Analizá el estado de avance de esta obra basándote en la descripción. Generá un informe técnico profesional en español.\`);
             } else {
                 if (!apiKey) { setReport('⚠ Configurá tu API Key en Más → Configuración.'); setLoading(false); return; }
                 const headers = { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true", "anthropic-version": "2023-06-01", "x-api-key": apiKey };
@@ -1162,10 +1237,19 @@ const CfgSection = memo(({ id, title, icon, children, openSec, setOpenSec }) => 
     </div>);
 });
 
-function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, setApiKey, cfgLocked, setCfgLocked, lics, obras, personal, alerts }) {
+function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, setApiKey, cfgLocked, setCfgLocked, lics, obras, personal, alerts, currentUser }) {
     const [showConfig, setShowConfig] = useState(false);
     const [openSec, setOpenSec] = useState("cuenta");
     const [localCfg, setLocalCfg] = useState({ ...DEFAULT_CONFIG, ...cfg });
+    const [editIconMode, setEditIconMode] = useState(false);
+    const [iconPickerFor, setIconPickerFor] = useState(null);
+    const [customIcons, setCustomIcons] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('bcm_icons') || '{}'); } catch { return {}; }
+    });
+    const saveCustomIcons = (icons) => {
+        setCustomIcons(icons);
+        localStorage.setItem('bcm_icons', JSON.stringify(icons));
+    };
     const [localKey, setLocalKey] = useState(apiKey || '');
     const [showKey, setShowKey] = useState(false);
     const [hasUnsaved, setHasUnsaved] = useState(false);
@@ -1519,6 +1603,49 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
                 <button onClick={() => setLocalCfg(p => ({ ...p, textos: { ...DEFAULT_TEXTOS } }))} style={{ width: "100%", background: T.bg, border: \`1px solid \${T.border}\`, borderRadius: T.rsm, padding: "8px 14px", fontSize: 12, color: T.sub, cursor: "pointer", marginTop: 4 }}>↺ Restaurar textos por defecto</button>
             </CfgSection>
 
+            <CfgSection id="iconos" title="Iconos del menú" icon="🎨" openSec={openSec} setOpenSec={handleSetOpenSec}>
+                <div style={{ fontSize: 11, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>Tocá cualquier ícono para cambiarlo. Podés elegir de la biblioteca o subir tu propia imagen.</div>
+                
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Acciones rápidas</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+                    {[{ id: "qa_lic", label: "Nueva licitación", defaultIcon: "📋" }, { id: "qa_obra", label: "Nueva obra", defaultIcon: "🏗" }, { id: "qa_mat", label: "Materiales", defaultIcon: "📦" }, { id: "qa_sub", label: "Subcontratos", defaultIcon: "🤝" }].map(item => {
+                        const ci = customIcons[item.id];
+                        return (
+                            <button key={item.id} onClick={() => setIconPickerFor({ id: item.id, label: item.label })}
+                                style={{ background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: 12, padding: "10px 6px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, position: "relative" }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, overflow: "hidden", fontSize: 20 }}>
+                                    {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 26, height: 26, objectFit: "contain" }} />
+                                    : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", width: 22, height: 22 }} />
+                                    : item.defaultIcon}
+                                </div>
+                                <div style={{ fontSize: 8, color: T.muted, fontWeight: 600, lineHeight: 1.2, textAlign: "center" }}>{item.label}</div>
+                                {ci && <div style={{ position: "absolute", top: 3, right: 3, width: 10, height: 10, background: "#10B981", borderRadius: "50%" }} />}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Menú principal</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                    {MAS_ITEMS.map(item => {
+                        const ci = customIcons[item.id];
+                        return (
+                            <button key={item.id} onClick={() => setIconPickerFor(item)}
+                                style={{ background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: 12, padding: "10px 6px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, position: "relative" }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, overflow: "hidden" }}>
+                                    {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 26, height: 26, objectFit: "contain" }} />
+                                    : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", width: 22, height: 22 }} />
+                                    : item.icon}
+                                </div>
+                                <div style={{ fontSize: 8, color: T.muted, fontWeight: 600, lineHeight: 1.2, textAlign: "center" }}>{item.label}</div>
+                                {ci && <div style={{ position: "absolute", top: 3, right: 3, width: 10, height: 10, background: "#10B981", borderRadius: "50%" }} />}
+                            </button>
+                        );
+                    })}
+                </div>
+                <button onClick={() => { localStorage.removeItem('bcm_icons'); setCustomIcons({}); }} style={{ width: "100%", background: T.bg, border: \`1px solid \${T.border}\`, borderRadius: T.rsm, padding: "9px", fontSize: 12, color: T.sub, cursor: "pointer", marginTop: 10 }}>↺ Restaurar todos los iconos originales</button>
+            </CfgSection>
+
             <PBtn full onClick={guardarYCerrar} style={{ marginTop: 8 }}>{t(cfg, 'cfg_guardar')}</PBtn>
 
             {/* Botón Exportar JSX */}
@@ -1554,7 +1681,7 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
         {showUnlockModal && (
             <Sheet title="🔓 Desbloquear configuración" onClose={() => { setShowUnlockModal(false); setUnlockUser(''); setUnlockPass(''); setUnlockErr(''); }}>
                 <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "12px 14px", marginBottom: 16, fontSize: 12, color: "#92400E", fontWeight: 600 }}>Ingresá las credenciales de administrador para desbloquear la configuración visual.</div>
-                <Field label="Usuario"><input value={unlockUser} onChange={e => { setUnlockUser(e.target.value); setUnlockErr(''); }} placeholder="admin" autoCapitalize="none" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: \`1.5px solid \${unlockErr ? '#FECACA' : T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
+                <Field label="Usuario"><input value={unlockUser} onChange={e => { setUnlockUser(e.target.value); setUnlockErr(''); }} placeholder="Ingresá tu usuario" autoCapitalize="none" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: \`1.5px solid \${unlockErr ? '#FECACA' : T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
                 <Field label="Contraseña"><input type="password" value={unlockPass} onChange={e => { setUnlockPass(e.target.value); setUnlockErr(''); }} placeholder="••••••••" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: \`1.5px solid \${unlockErr ? '#FECACA' : T.border}\`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
                 {unlockErr && <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#EF4444", marginBottom: 12, fontWeight: 600 }}>{unlockErr}</div>}
                 <PBtn full onClick={tryUnlock}>🔓 Desbloquear</PBtn>
@@ -1563,17 +1690,21 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
     </div>);
 }
 
-function Archivos({ setView }) { const [files, setFiles] = useState([]); const inputRef = useRef(null); async function handleUp(e) { for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); setFiles(p => [...p, { id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" }]); } e.target.value = ""; } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Archivos" back onBack={() => setView("mas")} right={<><input type="file" ref={inputRef} multiple onChange={handleUp} style={{ display: "none" }} /><PlusBtn onClick={() => inputRef.current?.click()} /></>} /><div style={{ padding: "12px 18px" }}>{files.length === 0 ? <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Subí tu primer archivo</div> : files.map(f => (<div key={f.id} style={{ display: "flex", alignItems: "center", gap: 11, background: T.card, border: \`1px solid \${T.border}\`, borderRadius: T.rsm, padding: "11px 13px", marginBottom: 7 }}><div style={{ width: 38, height: 38, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><span style={{ fontSize: 9, fontWeight: 800, color: T.accent }}>{f.ext}</span></div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</div><div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div></div><a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: \`1px solid \${T.border}\`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a></div>))}</div></div>); }
+function Archivos({ setView }) { const [files, setFiles] = useState([]); const [loaded, setLoaded] = useState(false); const inputRef = useRef(null); useEffect(() => { (async () => { try { const r = await storage.get("bcm_archivos"); if (r?.value) setFiles(JSON.parse(r.value)); } catch {} setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set("bcm_archivos", JSON.stringify(files)).catch(() => {}); }, [files, loaded]); async function handleUp(e) { for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); setFiles(p => [...p, { id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" }]); } e.target.value = ""; } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Archivos" back onBack={() => setView("mas")} right={<><input type="file" ref={inputRef} multiple onChange={handleUp} style={{ display: "none" }} /><PlusBtn onClick={() => inputRef.current?.click()} /></>} /><div style={{ padding: "12px 18px" }}>{files.length === 0 ? <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Subí tu primer archivo</div> : files.map(f => (<div key={f.id} style={{ display: "flex", alignItems: "center", gap: 11, background: T.card, border: \`1px solid \${T.border}\`, borderRadius: T.rsm, padding: "11px 13px", marginBottom: 7 }}><div style={{ width: 38, height: 38, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><span style={{ fontSize: 9, fontWeight: 800, color: T.accent }}>{f.ext}</span></div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</div><div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div></div><a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: \`1px solid \${T.border}\`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a></div>))}</div></div>); }
 
 function Seguimiento({ alerts, setAlerts, setView }) { function dismiss(id) { setAlerts(p => p.filter(a => a.id !== id)); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Seguimiento" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}>{["alta", "media"].map(prio => alerts.filter(a => a.prioridad === prio).length > 0 && (<div key={prio} style={{ marginBottom: 16 }}><div style={{ fontSize: 11, fontWeight: 700, color: prio === "alta" ? "#EF4444" : "#F59E0B", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{prio === "alta" ? "Crítico" : "Atención"}</div>{alerts.filter(a => a.prioridad === prio).map(a => (<div key={a.id} style={{ background: prio === "alta" ? "#FEF2F2" : "#FFFBEB", border: \`1px solid \${prio === "alta" ? "#FECACA" : "#FDE68A"}\`, borderRadius: 10, padding: "11px 13px", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}><div style={{ flex: 1, fontSize: 12, color: T.text, lineHeight: 1.4 }}>{a.msg}</div><button onClick={() => dismiss(a.id)} style={{ background: "none", border: "none", fontSize: 14, color: T.muted, cursor: "pointer" }}>✕</button></div>))}</div>))}{alerts.length === 0 && <div style={{ textAlign: "center", padding: "60px 0" }}><div style={{ fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 6 }}>✅ Todo en orden</div><div style={{ fontSize: 13, color: T.muted }}>Sin alertas</div></div>}</div></div>); }
 
-function ResumenView({ lics, obras, personal, alerts, setView }) { const kpis = [{ label: "Licitaciones", val: lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado)).length, color: "#3B82F6" }, { label: "Obras activas", val: obras.filter(o => o.estado === "curso").length, color: "#10B981" }, { label: "Personal", val: personal.length, color: "#8B5CF6" }, { label: "Alertas", val: alerts.filter(a => a.prioridad === "alta").length, color: "#EF4444" }]; return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Resumen Ejecutivo" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>{kpis.map(k => (<Card key={k.label} style={{ padding: "14px", textAlign: "center" }}><div style={{ fontSize: 28, fontWeight: 800, color: k.color }}>{k.val}</div><div style={{ fontSize: 10, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{k.label}</div></Card>))}</div>{obras.length > 0 && <Card style={{ padding: "14px 16px", marginBottom: 12 }}><Lbl>Avance de obras</Lbl>{obras.map(o => { const ec = OBRA_ESTADOS.find(e => e.id === o.estado) || OBRA_ESTADOS[0]; return (<div key={o.id} style={{ marginBottom: 10 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{o.nombre}</span><span style={{ fontSize: 13, fontWeight: 800, color: ec.color }}>{o.avance}%</span></div><div style={{ height: 8, background: T.bg, borderRadius: 4 }}><div style={{ height: 8, background: ec.color, borderRadius: 4, width: \`\${o.avance}%\`, transition: "width .6s" }} /></div></div>); })}</Card>}</div></div>); }
+function ResumenView({ lics, obras, personal, alerts, setView }) { const kpis = [{ label: "Licitaciones", val: lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado)).length, color: "#3B82F6" }, { label: "Obras activas", val: obras.filter(o => o.estado === "curso").length, color: "#10B981" }, { label: "Personal", val: personal.length, color: "#8B5CF6" }, { label: "Alertas", val: alerts.length, color: "#EF4444" }]; return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Resumen Ejecutivo" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>{kpis.map(k => (<Card key={k.label} style={{ padding: "14px", textAlign: "center" }}><div style={{ fontSize: 28, fontWeight: 800, color: k.color }}>{k.val}</div><div style={{ fontSize: 10, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{k.label}</div></Card>))}</div>{obras.length > 0 && <Card style={{ padding: "14px 16px", marginBottom: 12 }}><Lbl>Avance de obras</Lbl>{obras.map(o => { const ec = OBRA_ESTADOS.find(e => e.id === o.estado) || OBRA_ESTADOS[0]; return (<div key={o.id} style={{ marginBottom: 10 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{o.nombre}</span><span style={{ fontSize: 13, fontWeight: 800, color: ec.color }}>{o.avance}%</span></div><div style={{ height: 8, background: T.bg, borderRadius: 4 }}><div style={{ height: 8, background: ec.color, borderRadius: 4, width: \`\${o.avance}%\`, transition: "width .6s" }} /></div></div>); })}</Card>}</div></div>); }
 
-function MensajesView({ personal, setView }) { const [sel, setSel] = useState(null); const [threads, setThreads] = useState({}); const [msg, setMsg] = useState(''); const [loaded, setLoaded] = useState(false); const scrollRef = useRef(null); const taRef = useRef(null); useEffect(() => { (async () => { try { const r = await storage.get('bcm_msgs'); if (r?.value) setThreads(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set('bcm_msgs', JSON.stringify(threads)).catch(() => { }); }, [threads, loaded]); useEffect(() => { setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 80); }, [sel, threads]); function sendMsg() { if (!msg.trim() || !sel) return; const m = { id: uid(), txt: msg, autor: 'Yo', hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) }; setThreads(t => ({ ...t, [sel.id]: [...(t[sel.id] || []), m] })); setMsg(''); if (taRef.current) taRef.current.style.height = "22px"; } function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); } if (sel) { const thread = threads[sel.id] || []; return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}><AppHeader title={sel.nombre} sub={sel.rol} back onBack={() => setSel(null)} /><div style={{ flex: 1, overflowY: "auto", padding: "14px 18px 80px" }}>{thread.map(m => (<div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: m.autor === "Yo" ? "flex-end" : "flex-start" }}><div style={{ maxWidth: "82%", background: m.autor === "Yo" ? T.accent : T.card, border: m.autor === "Yo" ? "none" : \`1px solid \${T.border}\`, borderRadius: m.autor === "Yo" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 13px", color: m.autor === "Yo" ? "#fff" : T.text, fontSize: 13, lineHeight: 1.5, boxShadow: T.shadow, whiteSpace: "pre-wrap" }}>{m.txt}</div><div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{m.hora}</div></div>))}<div ref={scrollRef} /></div><div style={{ padding: "10px 16px calc(max(14px,env(safe-area-inset-bottom)) + 10px)", background: T.card, borderTop: \`1px solid \${T.border}\`, display: "flex", gap: 8, alignItems: "flex-end" }}><div style={{ flex: 1, background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: 22, padding: "10px 14px" }}><textarea ref={taRef} rows={1} value={msg} onChange={e => { setMsg(e.target.value); const el = taRef.current; if (el) { el.style.height = "22px"; el.style.height = Math.min(el.scrollHeight, 80) + "px"; } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }} style={{ width: "100%", background: "transparent", border: "none", color: T.text, fontSize: 14, lineHeight: 1.5, height: 22 }} /></div><button onClick={sendMsg} disabled={!msg.trim()} style={{ width: 42, height: 42, borderRadius: "50%", background: msg.trim() ? T.accent : "#E2E8F0", color: msg.trim() ? "#fff" : "#94A3B8", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></button></div></div>); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Mensajes internos" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}>{personal.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Primero agregá personal</div>}{personal.map(p => { const thread = threads[p.id] || []; const last = thread[thread.length - 1]; return (<Card key={p.id} onClick={() => setSel(p)} style={{ padding: "13px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}><div style={{ width: 44, height: 44, borderRadius: "50%", background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: T.accent, flexShrink: 0 }}>{ini(p.nombre)}</div><div style={{ flex: 1 }}><div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{p.nombre}</div><div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{last ? last.txt.slice(0, 38) + "..." : p.rol + " · Sin mensajes"}</div></div>{thread.length > 0 && <Badge color={T.accent} bg={T.accentLight}>{thread.length}</Badge>}<span style={{ fontSize: 14, color: T.muted }}>›</span></Card>); })}</div></div>); }
+function MensajesView({ personal, setView }) { const [sel, setSel] = useState(null); const [threads, setThreads] = useState({}); const [msg, setMsg] = useState(''); const [loaded, setLoaded] = useState(false); const scrollRef = useRef(null); const taRef = useRef(null); useEffect(() => { (async () => { try { const r = await storage.get('bcm_msgs'); if (r?.value) setThreads(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set('bcm_msgs', JSON.stringify(threads)).catch(() => { }); }, [threads, loaded]); useEffect(() => { setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 80); }, [sel, threads]); function sendMsg() { if (!msg.trim() || !sel) return; const m = { id: uid(), txt: msg, autor: 'Yo', hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) }; setThreads(t => ({ ...t, [sel.id]: [...(t[sel.id] || []), m] })); setMsg(''); if (taRef.current) taRef.current.style.height = "22px"; } function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); } if (sel) { const thread = threads[sel.id] || []; return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}><AppHeader title={sel.nombre} sub={sel.rol} back onBack={() => setSel(null)} /><div style={{ flex: 1, overflowY: "auto", padding: "14px 18px 10px" }}>{thread.map(m => (<div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: m.autor === "Yo" ? "flex-end" : "flex-start" }}><div style={{ maxWidth: "82%", background: m.autor === "Yo" ? T.accent : T.card, border: m.autor === "Yo" ? "none" : \`1px solid \${T.border}\`, borderRadius: m.autor === "Yo" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 13px", color: m.autor === "Yo" ? "#fff" : T.text, fontSize: 13, lineHeight: 1.5, boxShadow: T.shadow, whiteSpace: "pre-wrap" }}>{m.txt}</div><div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{m.hora}</div></div>))}<div ref={scrollRef} /></div><div style={{ padding: "10px 16px calc(max(14px,env(safe-area-inset-bottom)) + 10px)", background: T.card, borderTop: \`1px solid \${T.border}\`, display: "flex", gap: 8, alignItems: "flex-end" }}><div style={{ flex: 1, background: T.bg, border: \`1.5px solid \${T.border}\`, borderRadius: 22, padding: "10px 14px" }}><textarea ref={taRef} rows={1} value={msg} onChange={e => { setMsg(e.target.value); const el = taRef.current; if (el) { el.style.height = "22px"; el.style.height = Math.min(el.scrollHeight, 80) + "px"; } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }} style={{ width: "100%", background: "transparent", border: "none", color: T.text, fontSize: 14, lineHeight: 1.5, height: 22 }} /></div><button onClick={sendMsg} disabled={!msg.trim()} style={{ width: 42, height: 42, borderRadius: "50%", background: msg.trim() ? T.accent : "#E2E8F0", color: msg.trim() ? "#fff" : "#94A3B8", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></button></div></div>); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Mensajes internos" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}>{personal.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Primero agregá personal</div>}{personal.map(p => { const thread = threads[p.id] || []; const last = thread[thread.length - 1]; return (<Card key={p.id} onClick={() => setSel(p)} style={{ padding: "13px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}><div style={{ width: 44, height: 44, borderRadius: "50%", background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: T.accent, flexShrink: 0 }}>{ini(p.nombre)}</div><div style={{ flex: 1 }}><div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{p.nombre}</div><div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{last ? last.txt.slice(0, 38) + "..." : p.rol + " · Sin mensajes"}</div></div>{thread.length > 0 && <Badge color={T.accent} bg={T.accentLight}>{thread.length}</Badge>}<span style={{ fontSize: 14, color: T.muted }}>›</span></Card>); })}</div></div>); }
 
 function ContactosView({ setView, onContactosChange }) { const [contacts, setContacts] = useState([]); const [showNew, setShowNew] = useState(false); const [form, setForm] = useState({ nombre: '', email: '', telefono: '', empresa: '', rol: '' }); const [loaded, setLoaded] = useState(false); useEffect(() => { (async () => { try { const r = await storage.get('bcm_contactos'); if (r?.value) setContacts(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) { storage.set('bcm_contactos', JSON.stringify(contacts)).catch(() => { }); if (onContactosChange) onContactosChange(contacts); } }, [contacts, loaded]); function add() { if (!form.nombre || !form.email) return; setContacts(p => [...p, { ...form, id: uid() }]); setForm({ nombre: '', email: '', telefono: '', empresa: '', rol: '' }); setShowNew(false); } function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); } const COLS = ["#1D4ED8", "#7C3AED", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]; return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}><AppHeader title="Contactos" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} /><div style={{ flex: 1, overflowY: "auto", padding: "12px 18px", paddingBottom: 80 }}>{contacts.length === 0 && <div style={{ textAlign: "center", padding: "48px 0" }}><div style={{ fontSize: 40, marginBottom: 12 }}>📧</div><div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>Sin contactos</div></div>}{contacts.map((c, i) => { const col = COLS[i % COLS.length]; return (<Card key={c.id} style={{ padding: "12px 14px", marginBottom: 8 }}><div style={{ display: "flex", alignItems: "center", gap: 12 }}><div style={{ width: 42, height: 42, borderRadius: "50%", background: col + "18", border: \`1.5px solid \${col}44\`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: col, flexShrink: 0 }}>{ini(c.nombre)}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{c.nombre}</div>{(c.empresa || c.rol) && <div style={{ fontSize: 11, color: T.muted }}>{c.empresa}{c.rol ? \` · \${c.rol}\` : ""}</div>}<div style={{ fontSize: 11, color: T.accent, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.email}</div></div><div style={{ display: "flex", gap: 5, flexShrink: 0 }}><a href={\`mailto:\${c.email}\`} style={{ textDecoration: "none" }}><button style={{ background: T.accentLight, border: \`1px solid \${T.border}\`, borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✉️</button></a>{c.telefono && <a href={\`https://wa.me/\${c.telefono}\`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#DCF8C6", border: "1px solid #86EFAC", borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>💬</button></a>}<button onClick={() => setContacts(p => p.filter(x => x.id !== c.id))} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button></div></div></Card>); })}</div>{showNew && <Sheet title="Nuevo contacto" onClose={() => setShowNew(false)}><Field label="Nombre *"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Carlos Méndez" /></Field><Field label="Email *"><TInput value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} placeholder="cmendez@aa2000.com.ar" /></Field><FieldRow><Field label="Empresa"><TInput value={form.empresa} onChange={e => setForm(p => ({ ...p, empresa: e.target.value }))} placeholder="AA2000" /></Field><Field label="Rol"><TInput value={form.rol} onChange={e => setForm(p => ({ ...p, rol: e.target.value }))} placeholder="Inspector" /></Field></FieldRow><Field label="WhatsApp"><TInput value={form.telefono} onChange={e => setForm(p => ({ ...p, telefono: e.target.value.replace(/\\D/g, '') }))} placeholder="5491155556666" /></Field><PBtn full onClick={add} disabled={!form.nombre || !form.email}>Guardar</PBtn></Sheet>}</div>); }
 
-function WhatsappGrupos({ personal, setView }) { const [grupos, setGrupos] = useState([]); const [showNew, setShowNew] = useState(false); const [form, setForm] = useState({ nombre: '', miembros: [] }); const [loaded, setLoaded] = useState(false); useEffect(() => { (async () => { try { const r = await storage.get('bcm_wa'); if (r?.value) setGrupos(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set('bcm_wa', JSON.stringify(grupos)).catch(() => { }); }, [grupos, loaded]); function addG() { if (!form.nombre) return; setGrupos(p => [...p, { ...form, id: uid(), fecha: new Date().toLocaleDateString('es-AR') }]); setForm({ nombre: '', miembros: [] }); setShowNew(false); } function toggle(pid) { setForm(f => ({ ...f, miembros: f.miembros.includes(pid) ? f.miembros.filter(m => m !== pid) : [...f.miembros, pid] })); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Grupos WhatsApp" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} /><div style={{ padding: "14px 18px" }}>{grupos.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 14 }}>Sin grupos</div>}{grupos.map(g => { const mbs = personal.filter(p => g.miembros.includes(p.id)); return (<Card key={g.id} style={{ padding: "14px", marginBottom: 10 }}><div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 4 }}>{g.nombre}</div><div style={{ fontSize: 11, color: "#25D366", marginBottom: 10, fontWeight: 600 }}>{mbs.length} miembro{mbs.length !== 1 ? "s" : ""}</div><div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>{mbs.map(m => (<div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, background: T.bg, borderRadius: 8, padding: "8px 10px" }}><div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: T.text }}>{m.nombre}<span style={{ color: T.muted, fontWeight: 400 }}> · {m.rol}</span></div>{m.telefono && <a href={\`https://wa.me/\${m.telefono}\`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#25D366", border: "none", borderRadius: 7, width: 28, height: 28, cursor: "pointer", color: "white", fontSize: 12 }}>💬</button></a>}</div>))}</div><button onClick={() => setGrupos(p => p.filter(x => x.id !== g.id))} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "8px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>Eliminar</button></Card>); })}</div>{showNew && <Sheet title="Nuevo grupo" onClose={() => setShowNew(false)}><Field label="Nombre"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Equipo Terminal A" /></Field><div style={{ marginBottom: 14 }}><Lbl>Miembros</Lbl>{personal.map(p => { const sel = form.miembros.includes(p.id); return (<div key={p.id} onClick={() => toggle(p.id)} style={{ display: "flex", alignItems: "center", gap: 10, background: sel ? "#F0FFF4" : T.bg, border: \`1.5px solid \${sel ? "#25D366" : T.border}\`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", marginBottom: 6 }}><div style={{ width: 24, height: 24, borderRadius: "50%", background: sel ? "#25D366" : T.border, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>{sel ? "✓" : ""}</div><div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{p.nombre}<span style={{ color: T.muted, fontWeight: 400 }}> · {p.rol}</span></div></div>); })}</div><PBtn full onClick={addG} disabled={!form.nombre}>Crear grupo</PBtn></Sheet>}</div>); }
+function WhatsappGrupos({ personal, setView }) { const [grupos, setGrupos] = useState([]); const [showNew, setShowNew] = useState(false); const [form, setForm] = useState({ nombre: '', miembros: [] }); const [loaded, setLoaded] = useState(false); useEffect(() => { (async () => { try { const r = await storage.get('bcm_wa'); if (r?.value) setGrupos(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set('bcm_wa', JSON.stringify(grupos)).catch(() => { }); }, [grupos, loaded]); function addG() { if (!form.nombre) return; setGrupos(p => [...p, { ...form, id: uid(), fecha: new Date().toLocaleDateString('es-AR') }]); setForm({ nombre: '', miembros: [] }); setShowNew(false); } function toggle(pid) { setForm(f => ({ ...f, miembros: f.miembros.includes(pid) ? f.miembros.filter(m => m !== pid) : [...f.miembros, pid] })); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Grupos WhatsApp" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} /><div style={{ padding: "14px 18px" }}>{grupos.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 14 }}>Sin grupos</div>}{grupos.map(g => { const mbs = personal.filter(p => g.miembros.includes(p.id)); return (<Card key={g.id} style={{ padding: "14px", marginBottom: 10 }}><div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 4 }}>{g.nombre}</div><div style={{ fontSize: 11, color: "#25D366", marginBottom: 10, fontWeight: 600 }}>{mbs.length} miembro{mbs.length !== 1 ? "s" : ""}</div><div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>{mbs.map(m => (<div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, background: T.bg, borderRadius: 8, padding: "8px 10px" }}><div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: T.text }}>{m.nombre}<span style={{ color: T.muted, fontWeight: 400 }}> · {m.rol}</span></div>{m.telefono && <a href={\`https://wa.me/\${m.telefono}\`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#25D366", border: "none", borderRadius: 7, width: 28, height: 28, cursor: "pointer", color: "white", fontSize: 12 }}>💬</button></a>}</div>))}</div><button onClick={() => setGrupos(p => p.filter(x => x.id !== g.id))} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "8px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>Eliminar</button></Card>); })}</div>{showNew && <Sheet title="Nuevo grupo" onClose={() => setShowNew(false)}><Field label="Nombre"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Equipo Terminal A" /></Field><div style={{ marginBottom: 14 }}><Lbl>Miembros</Lbl>{personal.map(p => { const sel = form.miembros.includes(p.id); return (<div key={p.id} onClick={() => toggle(p.id)} style={{ display: "flex", alignItems: "center", gap: 10, background: sel ? "#F0FFF4" : T.bg, border: \`1.5px solid \${sel ? "#25D366" : T.border}\`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", marginBottom: 6 }}><div style={{ width: 24, height: 24, borderRadius: "50%", background: sel ? "#25D366" : T.border, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>{sel ? "✓" : ""}</div><div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{p.nombre}<span style={{ color: T.muted, fontWeight: 400 }}> · {p.rol}</span></div></div>); })}</div><PBtn full onClick={addG} disabled={!form.nombre}>Crear grupo</PBtn></Sheet>}
+
+        {iconPickerFor && <IconPickerModal item={iconPickerFor} customIcons={customIcons} onSave={saveCustomIcons} onClose={() => setIconPickerFor(null)} />}
+
+/div>); }
 
 function speakText(text) {
     window.speechSynthesis.cancel();
@@ -1884,10 +2015,64 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
     </div>);
 }
 
-const DEMO_LICS = [{ id: "l1", nombre: "Refacción Terminal A", ap: "aep", estado: "curso", monto: "$4.200.000", fecha: "10/03/25", sector: "Terminal A", docs: {} }, { id: "l2", nombre: "Ampliación Sala VIP", ap: "aep", estado: "presupuesto", monto: "$8.500.000", fecha: "02/04/25", sector: "Sala VIP", docs: {} }, { id: "l3", nombre: "Señalética Pista Norte", ap: "eze", estado: "visitar", monto: "—", fecha: "15/04/25", sector: "Pista Norte", docs: {} }, { id: "l4", nombre: "Hangar Técnico", ap: "eze", estado: "adjudicada", monto: "$12.100.000", fecha: "20/02/25", sector: "Hangar", docs: {} }, { id: "l5", nombre: "Baños Internacionales", ap: "eze", estado: "curso", monto: "$1.800.000", fecha: "28/03/25", sector: "Terminal B", docs: {} }];
+const DEMO_LICS = [/***EMPTY***/, nombre: "Refacción Terminal A", ap: "aep", estado: "curso", monto: "$4.200.000", fecha: "10/03/25", sector: "Terminal A", docs: {} }, { id: "l2", nombre: "Ampliación Sala VIP", ap: "aep", estado: "presupuesto", monto: "$8.500.000", fecha: "02/04/25", sector: "Sala VIP", docs: {} }, { id: "l3", nombre: "Señalética Pista Norte", ap: "eze", estado: "visitar", monto: "—", fecha: "15/04/25", sector: "Pista Norte", docs: {} }, { id: "l4", nombre: "Hangar Técnico", ap: "eze", estado: "adjudicada", monto: "$12.100.000", fecha: "20/02/25", sector: "Hangar", docs: {} }, { id: "l5", nombre: "Baños Internacionales", ap: "eze", estado: "curso", monto: "$1.800.000", fecha: "28/03/25", sector: "Terminal B", docs: {} }];
 const DEMO_OBRAS = [{ id: "o1", nombre: "Refacción Terminal A", ap: "aep", estado: "curso", avance: 65, inicio: "10/03/25", cierre: "30/06/25", sector: "Terminal A", obs: [], fotos: [], archivos: [], informes: [], docs: {} }, { id: "o2", nombre: "Baños Internacionales", ap: "eze", estado: "curso", avance: 30, inicio: "28/03/25", cierre: "31/07/25", sector: "Terminal B", obs: [], fotos: [], archivos: [], informes: [], docs: {} }, { id: "o3", nombre: "Hangar Técnico", ap: "eze", estado: "terminada", avance: 100, inicio: "20/02/25", cierre: "15/04/25", sector: "Hangar", obs: [], fotos: [], archivos: [], informes: [], docs: {} }];
 const DEMO_PERSONAL = [{ id: "p1", nombre: "M. Rodríguez", rol: "Jefe de Obra", empresa: "BelfastCM", docs: {}, telefono: "5491154321234", foto: "" }, { id: "p2", nombre: "P. Gómez", rol: "Capataz", empresa: "BelfastCM", docs: {}, telefono: "5491187654321", foto: "" }];
 const DEMO_ALERTS = [{ id: "a1", prioridad: "alta", msg: "ART de M. Rodríguez vence en 2 días" }, { id: "a2", prioridad: "media", msg: "Obra 'Baños Internacionales' sin actividad hace 5 días" }, { id: "a3", prioridad: "alta", msg: "Pliego EZE vence en 3 días" }];
+
+function LoginScreen({ onLogin }) {
+    const [user, setUser] = useState('');
+    const [pass, setPass] = useState('');
+    const [err, setErr] = useState('');
+    const [loading, setLoading] = useState(false);
+    function tryLogin() {
+        setLoading(true);
+        setTimeout(() => {
+            const c = USERS.find(u => u.user === user.trim().toLowerCase() && u.pass === pass);
+            if (c) { onLogin(c); return; }
+            // Check personal staff users
+            const staff = (window.__bcm_personal__ || []).find(p => p.appUser && p.appUser === user.trim().toLowerCase() && p.appPass === pass);
+            if (staff) { onLogin({ user: staff.appUser, pass: staff.appPass, rol: staff.rol, nombre: staff.nombre, nivel: staff.nivel || 'empleado' }); return; }
+            setErr('Usuario o contraseña incorrectos'); setLoading(false);
+        }, 400);
+    }
+    return (
+        <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#F1F5F9', padding: '0 32px', fontFamily: "var(--font,'Plus Jakarta Sans'),sans-serif" }}>
+            <div style={{ width: '100%', maxWidth: 360 }}>
+                <div style={{ textAlign: 'center', marginBottom: 32 }}>
+                    {loginLogo
+                        ? <img src={loginLogo} alt="Logo" style={{ height: 80, objectFit: 'contain', marginBottom: 12, display: 'block', margin: '0 auto 12px' }} />
+                        : <div style={{ width: 64, height: 64, borderRadius: 18, background: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: 28 }}>🏗</div>
+                    }
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#0F172A' }}>BelfastCM</div>
+                    <div style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>Construction Management</div>
+                </div>
+                <div style={{ background: '#fff', borderRadius: 16, padding: '24px 20px', boxShadow: '0 4px 24px rgba(0,0,0,.08)' }}>
+                    <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>Usuario</div>
+                        <input value={user} onChange={e => { setUser(e.target.value); setErr(''); }} onKeyDown={e => e.key === 'Enter' && tryLogin()} placeholder="Ingresá tu usuario" style={{ width: '100%', padding: '12px 14px', border: '1.5px solid #E2E8F0', borderRadius: 10, fontSize: 15, color: '#0F172A', background: '#F8FAFC', boxSizing: 'border-box', outline: 'none' }} />
+                    </div>
+                    <div style={{ marginBottom: 20 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>Contraseña</div>
+                        <div style={{ position: 'relative' }}>
+                            <input type={showPass ? 'text' : 'password'} value={pass} onChange={e => { setPass(e.target.value); setErr(''); }} onKeyDown={e => e.key === 'Enter' && tryLogin()} placeholder="••••••••" style={{ width: '100%', padding: '12px 44px 12px 14px', border: '1.5px solid #E2E8F0', borderRadius: 10, fontSize: 15, color: '#0F172A', background: '#F8FAFC', boxSizing: 'border-box', outline: 'none' }} />
+                            <button type="button" onClick={() => setShowPass(v => !v)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: showPass ? '#1D4ED8' : '#94A3B8', padding: 4, display: 'flex', alignItems: 'center' }}>
+                                {showPass
+                                    ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                                    : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                    {err && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '9px 12px', fontSize: 12, color: '#EF4444', marginBottom: 14 }}>{err}</div>}
+                    <button onClick={tryLogin} disabled={loading || !user || !pass} style={{ width: '100%', padding: '14px', background: (!user || !pass) ? '#CBD5E1' : '#1D4ED8', color: '#fff', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
+                        {loading ? 'Ingresando...' : 'Ingresar'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 export default function App() {
     const [view, setView] = useState("chat");
@@ -1899,6 +2084,10 @@ export default function App() {
     const [detailObraId, setDetailObraId] = useState(null);
     const [authed, setAuthed] = useState(null);
     const [authModal, setAuthModal] = useState(null);
+    const [loggedIn, setLoggedIn] = useState(false);
+    const [currentUser, setCurrentUser] = useState(null);
+    const [unreadMsgs, setUnreadMsgs] = useState(0);
+    const [showMsgBanner, setShowMsgBanner] = useState(false);
     const [chatMsgs, setChatMsgs] = useState([]);
     const [cargarState, setCargarState] = useState({ obraId: '', newFotos: [], report: '' });
     const [cfg, setCfg] = useState(DEFAULT_CONFIG);
@@ -2001,6 +2190,72 @@ export default function App() {
         else { setAuthModal({ onSuccess: (u) => { setAuthed(u); action(); setAuthModal(null); }, onClose: () => setAuthModal(null), titulo: \`🔒 \${titulo}\` }); }
     }
     const nav = (v) => { setDetailObraId(null); setView(v); };
+    // Expose personal for login check
+    useEffect(() => { window.__bcm_personal__ = personal; }, [personal]);
+
+    // Auto-check payment alerts
+    useEffect(() => {
+        if (!dataLoaded) return;
+        obras.forEach(o => {
+            if (o.estado !== 'curso') return;
+            const total = parseFloat(String(o.monto || '0').replace(/[^0-9.]/g,'')) || 0;
+            const pagado = parseFloat(o.pagado || 0);
+            if (total <= 0) return;
+            const pct = pagado / total * 100;
+            const saldo = total - pagado;
+            if (pct > 90) {
+                const msg = \`💳 "\${o.nombre}": presupuesto al \${Math.round(pct)}% — quedan $\${saldo.toLocaleString('es-AR')}\`;
+                if (!alerts.some(a => a.msg === msg))
+                    setAlerts(p => [...p, { id: uid(), prioridad: 'alta', msg }]);
+            }
+        });
+    }, [dataLoaded, obras]);
+
+    // Auto-check document expiry and create alerts
+    useEffect(() => {
+        if (!dataLoaded) return;
+        const hoy = new Date();
+        const nuevasAlertas = [];
+        personal.forEach(p => {
+            Object.entries(p.docs || {}).forEach(([did, doc]) => {
+                if (!doc?.vence) return;
+                const [d, m, y] = doc.vence.split('/');
+                if (!d || !m || !y) return;
+                const vence = new Date(\`20\${y}\`, m - 1, d);
+                const diasRestantes = Math.ceil((vence - hoy) / (1000 * 60 * 60 * 24));
+                if (diasRestantes <= 7 && diasRestantes >= 0) {
+                    const msg = \`⚠️ \${p.nombre}: \${doc.nombre || did.toUpperCase()} vence en \${diasRestantes === 0 ? 'HOY' : diasRestantes + ' día' + (diasRestantes > 1 ? 's' : '')}\`;
+                    const yaExiste = alerts.some(a => a.msg === msg);
+                    if (!yaExiste) nuevasAlertas.push({ id: uid(), prioridad: diasRestantes <= 2 ? 'alta' : 'media', msg });
+                } else if (diasRestantes < 0) {
+                    const msg = \`🔴 \${p.nombre}: \${doc.nombre || did.toUpperCase()} VENCIDO hace \${Math.abs(diasRestantes)} día\${Math.abs(diasRestantes) > 1 ? 's' : ''}\`;
+                    const yaExiste = alerts.some(a => a.msg === msg);
+                    if (!yaExiste) nuevasAlertas.push({ id: uid(), prioridad: 'alta', msg });
+                }
+            });
+        });
+        if (nuevasAlertas.length > 0) setAlerts(p => [...p, ...nuevasAlertas]);
+    }, [dataLoaded, personal]);
+
+    // Check unread messages every 15 seconds
+    useEffect(() => {
+        if (!loggedIn || !currentUser) return;
+        const miUser = currentUser.user || currentUser.nombre || 'admin';
+        async function checkUnread() {
+            try {
+                const r = await fetch(\`\${SUPA_URL}/rest/v1/bcm_mensajes?para=eq.\${encodeURIComponent(miUser)}&leido=eq.false&select=id\`, { headers: SH() });
+                if (r.ok) {
+                    const d = await r.json();
+                    const count = d?.length || 0;
+                    setUnreadMsgs(count);
+                    if (count > 0) setShowMsgBanner(true);
+                }
+            } catch {}
+        }
+        checkUnread();
+        const interval = setInterval(checkUnread, 15000);
+        return () => clearInterval(interval);
+    }, [loggedIn, currentUser]);
     const hideBrand = ["archivos", "seguimiento", "mensajes"].includes(view);
 
     return (
@@ -2009,18 +2264,22 @@ export default function App() {
             <style>{buildThemeCSS(cfg)}</style>
             {!hideBrand && <AppBrand cfg={cfg} />}
             <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-                {view === "dashboard" && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} />}
+                {view === "dashboard" && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} customIcons={typeof window !== "undefined" ? (JSON.parse(localStorage.getItem("bcm_icons") || "{}")) : {}} />}
                 {view === "licitaciones" && <Licitaciones lics={lics} setLics={setLics} requireAuth={requireAuth} cfg={cfg} obras={obras} setObras={setObras} />}
                 {view === "obras" && <Obras obras={obras} setObras={setObras} lics={lics} detailId={detailObraId} setDetailId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} apiKey={apiKey} />}
                 {view === "personal" && <Personal personal={personal} setPersonal={setPersonal} obras={obras} cfg={cfg} />}
-                {view === "mas" && <Mas setView={nav} authed={authed} setAuthed={setAuthed} requireAuth={requireAuth} cfg={cfg} setCfg={setCfg} apiKey={apiKey} setApiKey={setApiKey} cfgLocked={cfgLocked} setCfgLocked={setCfgLocked} lics={lics} obras={obras} personal={personal} alerts={alerts} />}
+                {view === "mas" && <Mas setView={nav} authed={authed} setAuthed={setAuthed} requireAuth={requireAuth} cfg={cfg} setCfg={setCfg} apiKey={apiKey} setApiKey={setApiKey} cfgLocked={cfgLocked} setCfgLocked={setCfgLocked} lics={lics} obras={obras} personal={personal} alerts={alerts} currentUser={currentUser} />}
                 {view === "archivos" && <Archivos setView={nav} />}
                 {view === "seguimiento" && <Seguimiento alerts={alerts} setAlerts={setAlerts} setView={nav} />}
-                {view === "mensajes" && <MensajesView personal={personal} setView={nav} />}
+                {view === "mensajes" && <MensajesView personal={personal} setView={nav} currentUser={currentUser} />}
                 {view === "resumen" && <ResumenView lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} />}
                 {view === "cargar" && <CargarView obras={obras} setObras={setObras} cargarState={cargarState} setCargarState={setCargarState} apiKey={apiKey} />}
                 {view === "contactos" && <ContactosView setView={nav} onContactosChange={setContactos} />}
                 {view === "whatsapp" && <WhatsappGrupos personal={personal} setView={nav} />}
+                {view === "proveedores" && <ProveedoresView setView={nav} />}
+                {view === "info_externa" && <InfoExternaView setView={nav} />}
+                {view === "info_util" && <InfoUtilView setView={nav} />}
+                {view === "gantt" && <GanttView obras={obras} setView={nav} />}
                 {view === "informes_ingeniero" && <InformesIngeniero setView={nav} />}
                 {view === "informes_ia" && <InformesIA obras={obras} personal={personal} lics={lics} alerts={alerts} setView={nav} apiKey={apiKey} cfg={cfg} />}
                 {view === "vigilancia" && <PanelVigilancia setView={nav} />}
@@ -2038,6 +2297,7 @@ export default function App() {
 
 
 // ── CONSTANTES ─────────────────────────────────────────────────────────
+const T = { bg: "var(--bg,#F1F5F9)", card: "var(--card,#fff)", border: "var(--border,#E2E8F0)", text: "var(--text,#0F172A)", sub: "var(--sub,#475569)", muted: "var(--muted,#94A3B8)", accent: "var(--accent,#1D4ED8)", accentLight: "var(--al,#EFF6FF)", navy: "var(--navy,#0F172A)", r: "var(--r,14px)", rsm: "var(--rsm,10px)", shadow: "0 1px 3px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04)" };
 const AIRPORTS = [{ id: "aep", code: "AEP", name: "Aeroparque Jorge Newbery" }, { id: "eze", code: "EZE", name: "Aerop. Int'l Ministro Pistarini" }];
 const LIC_ESTADOS = [{ id: "visitar", label: "A Visitar", color: "#F59E0B", bg: "#FFFBEB" }, { id: "presupuesto", label: "Presupuesto", color: "#3B82F6", bg: "#EFF6FF" }, { id: "curso", label: "En Curso", color: "#8B5CF6", bg: "#F5F3FF" }, { id: "presentada", label: "Presentada", color: "#F97316", bg: "#FFF7ED" }, { id: "adjudicada", label: "Adjudicada", color: "#10B981", bg: "#ECFDF5" }, { id: "descartada", label: "Descartada", color: "#EF4444", bg: "#FEF2F2" }];
 const OBRA_ESTADOS = [{ id: "pendiente", label: "Pendiente", color: "#94A3B8", bg: "#F8FAFC" }, { id: "curso", label: "En Curso", color: "#10B981", bg: "#ECFDF5" }, { id: "pausada", label: "Pausada", color: "#F59E0B", bg: "#FFFBEB" }, { id: "terminada", label: "Terminada", color: "#6366F1", bg: "#EEF2FF" }];
@@ -2045,7 +2305,14 @@ const ROLES = ["Jefe de Obra", "Capataz", "Técnico", "Proveedor", "Contratista"
 const DOC_TYPES = [{ id: "art", label: "ART", acceptsExp: true }, { id: "antec", label: "Antecedentes", acceptsExp: false }, { id: "preoc", label: "Preocupacional", acceptsExp: true }, { id: "dni", label: "DNI", acceptsExp: false }, { id: "sicop", label: "SiCoP", acceptsExp: false }, { id: "alta", label: "Alta Temprana", acceptsExp: false }];
 const LIC_DOC_TYPES = [{ id: "planos", label: "Planos", accept: ".pdf,.png,.jpg,.dwg,.zip" }, { id: "pliego", label: "Pliego", accept: ".pdf,.doc,.docx" }, { id: "excel", label: "Excel", accept: ".xlsx,.xls,.csv,.pdf" }, { id: "otros", label: "Otros", accept: "*" }];
 const EMAIL_IA = "ia.belfastcm@gmail.com";
-const ADMIN_CREDS = [{ user: "admin", pass: "belfast2025", rol: "Administrador" }, { user: "supervisor", pass: "obra2025", rol: "Supervisor" }];
+const ADMIN_CREDS = [{ user: "admin", pass: "belfast2025", rol: "Administrador", nivel: "directivo" }, { user: "supervisor", pass: "obra2025", rol: "Supervisor", nivel: "directivo" }];
+const USERS = ADMIN_CREDS; // alias — configurable desde Más → Configuración
+function isDirectivo(user) {
+    if (!user) return false;
+    const nivel = user.nivel || '';
+    const rol = (user.rol || '').toLowerCase();
+    return nivel === 'directivo' || ['administrador', 'supervisor', 'gerente', 'director'].some(r => rol.includes(r));
+}
 
 // ── TEMA ───────────────────────────────────────────────────────────────
 const THEME_PRESETS = [
@@ -2117,27 +2384,34 @@ function t(cfg, key) { return cfg?.textos?.[key] || DEFAULT_TEXTOS[key] || key; 
 function getUbics(cfg) { return (cfg?.ubicaciones?.length ? cfg.ubicaciones : DEFAULT_UBICACIONES); }
 function getLabelUbic(cfg) { return cfg?.labelUbicacion || "Aeropuerto"; }
 function uid() { return Math.random().toString(36).slice(2, 9); }
-function toDataUrl(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }); }
+function toDataUrl(f, maxW = 1400) {
+    return new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            if (!f.type.startsWith('image/')) { res(e.target.result); return; }
+            const img = new Image();
+            img.onload = () => {
+                if (img.width <= maxW) { res(e.target.result); return; }
+                const c = document.createElement('canvas');
+                const ratio = maxW / img.width;
+                c.width = maxW; c.height = Math.round(img.height * ratio);
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                res(c.toDataURL('image/jpeg', 0.85));
+            };
+            img.onerror = () => res(e.target.result);
+            img.src = e.target.result;
+        };
+        reader.onerror = rej;
+        reader.readAsDataURL(f);
+    });
+}
 function getBase64(d) { return d.split(',')[1]; }
 function getMediaType(d) { const m = d.match(/data:([^;]+);/); return m ? m[1] : 'image/jpeg'; }
 async function callAI(msgs, sys, apiKey) {
     try {
-        // Intentar API interna de Claude (artifacts publicados en claude.ai)
-        if (typeof window !== 'undefined' && window.claude?.complete) {
-            const fullPrompt = sys ? sys + "\n\n" + msgs.map(m => {
-                const txt = Array.isArray(m.content) ? m.content.filter(b => b.type==='text').map(b=>b.text).join('\n') : m.content;
-                return (m.role === 'user' ? 'Usuario: ' : 'Asistente: ') + txt;
-            }).join('\n') : msgs.map(m => {
-                const txt = Array.isArray(m.content) ? m.content.filter(b => b.type==='text').map(b=>b.text).join('\n') : m.content;
-                return (m.role === 'user' ? 'Usuario: ' : 'Asistente: ') + txt;
-            }).join('\n');
-            const result = await window.claude.complete(fullPrompt);
-            return result || "Sin respuesta.";
-        }
-        // Fallback: API directa con key propia
         const headers = { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true", "anthropic-version": "2023-06-01" };
         if (apiKey) headers["x-api-key"] = apiKey;
-        else return "⚠ Configurá tu API Key en Más → Configuración para usar la IA.";
+        else return "⚠ Para usar el asistente, ingresá tu API Key en Más → Configuración → API Key de Claude.";
         const r = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
             headers,
@@ -2163,7 +2437,7 @@ function buildThemeCSS(cfg) {
     return `:root{--bg:${c.bg};--card:${c.card};--border:${c.border};--text:${c.text};--sub:${c.sub || '#475569'};--muted:${c.muted || '#94A3B8'};--accent:${c.accent};--al:${c.al || hexLight(c.accent)};--navy:${c.navy};--r:${rv}px;--rsm:${Math.max(4, rv - 4)}px;--font:${fv};}`;
 }
 
-const T = { bg: "var(--bg,#F1F5F9)", card: "var(--card,#fff)", border: "var(--border,#E2E8F0)", text: "var(--text,#0F172A)", sub: "var(--sub,#475569)", muted: "var(--muted,#94A3B8)", accent: "var(--accent,#1D4ED8)", accentLight: "var(--al,#EFF6FF)", navy: "var(--navy,#0F172A)", r: "var(--r,14px)", rsm: "var(--rsm,10px)", shadow: "0 1px 3px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04)" };
+
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Montserrat:wght@400;600;700;800&display=swap');
@@ -2196,15 +2470,15 @@ const AA2000Symbol = ({ size = 54 }) => (
 function AppBrand({ cfg }) {
     const lb = cfg?.logoBelfast, la = cfg?.logoAA2000;
     return (
-        <div style={{ background: "#fff", borderBottom: `1px solid ${T.border}`, padding: "8px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, minHeight: 76 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {lb ? <img src={lb} alt="Belfast" style={{ height: 66, objectFit: "contain" }} />
-                    : <><BelfastLogo size={62} /><div style={{ lineHeight: 1.2 }}><div style={{ fontSize: 17, fontWeight: 900, color: "#111", letterSpacing: "0.06em", lineHeight: 1 }}>BELFAST</div><div style={{ fontSize: 9, fontWeight: 600, color: "#555", letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 2 }}>Construction Management</div></div></>}
+        <div style={{ background: "#fff", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "stretch", flexShrink: 0, minHeight: 72 }}>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "8px 12px" }}>
+                {lb ? <img src={lb} alt="Belfast" style={{ maxHeight: 54, maxWidth: "100%", objectFit: "contain" }} />
+                    : <div style={{ display: "flex", alignItems: "center", gap: 8 }}><BelfastLogo size={46} /><div style={{ lineHeight: 1.2 }}><div style={{ fontSize: 13, fontWeight: 900, color: "#111", letterSpacing: "0.06em" }}>BELFAST</div><div style={{ fontSize: 8, fontWeight: 600, color: "#555", letterSpacing: "0.08em", textTransform: "uppercase" }}>Construction Mgmt</div></div></div>}
             </div>
-            <div style={{ width: 1, height: 58, background: T.border, flexShrink: 0 }} />
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {la ? <img src={la} alt="AA2000" style={{ height: 66, objectFit: "contain" }} />
-                    : <><AA2000Symbol size={76} /><div style={{ lineHeight: 1.35 }}><div style={{ fontSize: 15, color: "#6b7280", fontWeight: 400 }}>Aeropuertos</div><div style={{ fontSize: 15, color: "#6b7280", fontWeight: 600 }}>Argentina</div></div></>}
+            <div style={{ width: 1, background: T.border, flexShrink: 0 }} />
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "8px 12px" }}>
+                {la ? <img src={la} alt="AA2000" style={{ maxHeight: 54, maxWidth: "100%", objectFit: "contain" }} />
+                    : <div style={{ display: "flex", alignItems: "center", gap: 8 }}><AA2000Symbol size={58} /><div style={{ lineHeight: 1.35 }}><div style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>Aeropuertos</div><div style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>Argentina</div></div></div>}
             </div>
         </div>
     );
@@ -2243,7 +2517,7 @@ function LoginModal({ titulo, onSuccess, onClose }) {
             <span style={{ fontSize: 12, color: "#15803D", fontWeight: 600 }}>Área protegida – Acceso administrativo</span>
         </div>
         <Field label="Usuario">
-            <input value={u} onChange={e => { setU(e.target.value); setErr(''); }} placeholder="admin"
+            <input value={u} onChange={e => { setU(e.target.value); setErr(''); }} placeholder="Ingresá tu usuario"
                 autoCapitalize="none" autoCorrect="off" autoComplete="username"
                 onKeyDown={e => e.key === 'Enter' && login()}
                 style={{ width: "100%", background: T.bg, border: `1.5px solid ${err ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} />
@@ -2268,16 +2542,7 @@ function LoginModal({ titulo, onSuccess, onClose }) {
             {err}
         </div>}
         <PBtn full onClick={login}>Ingresar</PBtn>
-        <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Credenciales de acceso</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                {ADMIN_CREDS.map(c => (<div key={c.user} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 10px" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent,#1D4ED8)" }}>{c.rol}</div>
-                    <div style={{ fontSize: 10, color: T.sub, marginTop: 2 }}>Usuario: <strong>{c.user}</strong></div>
-                    <div style={{ fontSize: 10, color: T.sub }}>Clave: <strong>{c.pass}</strong></div>
-                </div>))}
-            </div>
-        </div>
+
     </Sheet>);
 }
 
@@ -2292,7 +2557,7 @@ const NAV_DEFS = [
 function BottomNav({ view, setView, alerts, cfg }) {
     return (<nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.card, borderTop: `1px solid ${T.border}`, display: "flex", padding: "6px 0 max(8px,env(safe-area-inset-bottom))", zIndex: 100, boxShadow: "0 -2px 16px rgba(0,0,0,.06)" }}>
         {NAV_DEFS.map(n => {
-            const active = view === n.id; const badge = n.id === "dashboard" && alerts.filter(a => a.prioridad === "alta").length > 0; const label = t(cfg, n.tk); return (
+            const active = view === n.id; const badge = n.id === "dashboard" && alerts.length > 0; const label = t(cfg, n.tk); return (
                 <button key={n.id} onClick={() => setView(n.id)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: "none", border: "none", color: n.id === "cargar" ? "#fff" : active ? "var(--accent,#1D4ED8)" : T.muted, padding: "4px 0", position: "relative" }}>
                     {n.id === "cargar" ? <div style={{ width: 46, height: 46, borderRadius: "50%", background: "var(--accent,#1D4ED8)", display: "flex", alignItems: "center", justifyContent: "center", marginTop: -16, boxShadow: "0 4px 14px rgba(0,0,0,.25)", border: `3px solid ${T.card}` }}>{n.icon}</div> : n.icon}
                     <span style={{ fontSize: 9, fontWeight: active ? 700 : 500, color: n.id === "cargar" ? "var(--accent,#1D4ED8)" : undefined }}>{label}</span>
@@ -2303,7 +2568,7 @@ function BottomNav({ view, setView, alerts, cfg }) {
     </nav>);
 }
 
-function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg }) {
+function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg, customIcons = {} }) {
     const UBICS = getUbics(cfg);
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <div style={{ background: T.navy, padding: "16px 18px 20px" }}>
@@ -2311,7 +2576,7 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
             <div style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>{t(cfg, 'dash_titulo')}</div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>{new Date().toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" })}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginTop: 16 }}>
-                {[{ l: t(cfg, 'dash_licitaciones'), v: lics.filter(l => !["adjudicada", "descartada"].includes(l.estado)).length, c: "#60A5FA" }, { l: t(cfg, 'dash_obras_activas'), v: obras.filter(o => o.estado === "curso").length, c: "#34D399" }, { l: t(cfg, 'dash_alertas'), v: alerts.filter(a => a.prioridad === "alta").length, c: "#FBBF24" }, { l: t(cfg, 'dash_personal'), v: personal.length, c: "#A78BFA" }].map(k => (
+                {[{ l: t(cfg, 'dash_licitaciones'), v: lics.filter(l => !["adjudicada", "descartada"].includes(l.estado)).length, c: "#60A5FA" }, { l: t(cfg, 'dash_obras_activas'), v: obras.filter(o => o.estado === "curso").length, c: "#34D399" }, { l: t(cfg, 'dash_alertas'), v: alerts.length, c: "#FBBF24" }, { l: t(cfg, 'dash_personal'), v: personal.length, c: "#A78BFA" }].map(k => (
                     <div key={k.l} style={{ background: "rgba(255,255,255,.08)", borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
                         <div style={{ fontSize: 22, fontWeight: 800, color: k.c }}>{k.v}</div>
                         <div style={{ fontSize: 9, color: "rgba(255,255,255,.5)", marginTop: 2, lineHeight: 1.3 }}>{k.l}</div>
@@ -2335,13 +2600,20 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
             <div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t(cfg, 'dash_acciones')}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    {[{ label: t(cfg, 'dash_nueva_lic'), view: "licitaciones", lock: true, icon: "📋" }, { label: t(cfg, 'dash_nueva_obra'), view: "obras", lock: true, icon: "🏗" }, { label: t(cfg, 'dash_presup_mat'), view: "presupuesto_materiales", lock: false, icon: "📦" }, { label: t(cfg, 'dash_subcontratos'), view: "presupuesto_subcontratos", lock: false, icon: "🤝" }].map(a => (
-                        <button key={a.label} onClick={() => a.lock ? requireAuth(() => setView(a.view), a.label) : setView(a.view)} style={{ background: T.card, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "14px 12px", textAlign: "left", boxShadow: T.shadow, cursor: "pointer", position: "relative" }}>
-                            <div style={{ fontSize: 16, marginBottom: 4 }}>{a.icon}</div>
+                    {[{ id: "qa_lic", label: t(cfg, 'dash_nueva_lic'), view: "licitaciones", lock: true, icon: "📋" }, { id: "qa_obra", label: t(cfg, 'dash_nueva_obra'), view: "obras", lock: true, icon: "🏗" }, { id: "qa_mat", label: t(cfg, 'dash_presup_mat'), view: "presupuesto_materiales", lock: false, icon: "📦" }, { id: "qa_sub", label: t(cfg, 'dash_subcontratos'), view: "presupuesto_subcontratos", lock: false, icon: "🤝" }].map(a => {
+                        const ci = customIcons?.[a.id];
+                        return (
+                        <button key={a.id} onClick={() => a.lock ? requireAuth(() => setView(a.view), a.label) : setView(a.view)} style={{ background: T.card, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "14px 12px", textAlign: "left", boxShadow: T.shadow, cursor: "pointer", position: "relative" }}>
+                            <div style={{ fontSize: 22, marginBottom: 6, display: "flex", alignItems: "center" }}>
+                                {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 28, height: 28, objectFit: "contain" }} />
+                                : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", width: 24, height: 24 }} />
+                                : a.icon}
+                            </div>
                             <div style={{ fontSize: 12, fontWeight: 600, color: T.text, lineHeight: 1.3 }}>{a.label}</div>
                             {a.lock && <div style={{ position: "absolute", top: 8, right: 8, opacity: .4 }}><svg width="11" height="11" viewBox="0 0 24 24" fill={T.sub}><path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z" clipRule="evenodd" /></svg></div>}
                         </button>
-                    ))}
+                        );
+                    })}
                 </div>
             </div>
         </div>
@@ -2667,9 +2939,16 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
     const [form, setForm] = useState({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
     const [newObs, setNewObs] = useState(""); const fileRef = useRef(null); const archRef = useRef(null);
     const detail = detailId ? obras.find(o => o.id === detailId) : null;
-    function add() { if (!form.nombre.trim()) return; setObras(p => [...p, { ...form, id: uid(), avance: parseInt(form.avance) || 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]); setForm({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" }); setShowNew(false); }
+    function add() { if (!form.nombre.trim()) return; setObras(p => [...p, { ...form, id: uid(), avance: parseInt(form.avance) || 0, pagado: 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]); setForm({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" }); setShowNew(false); }
     function upd(id, patch) { setObras(p => p.map(o => o.id === id ? { ...o, ...patch } : o)); }
-    async function handleFoto(e) { if (!detail) return; for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); upd(detail.id, { fotos: [...detail.fotos, { id: uid(), url, nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") }] }); } e.target.value = ""; }
+    async function handleFoto(e) {
+        if (!detail) return;
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+        const nuevas = await Promise.all(files.map(async f => ({ id: uid(), url: await toDataUrl(f), nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") })));
+        upd(detail.id, { fotos: [...(detail.fotos || []), ...nuevas] });
+        e.target.value = "";
+    }
     async function handleArch(e) { if (!detail) return; for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); upd(detail.id, { archivos: [...detail.archivos, { id: uid(), url, nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), fecha: new Date().toLocaleDateString("es-AR") }] }); } e.target.value = ""; }
     const ec = id => OBRA_ESTADOS.find(e => e.id === id) || OBRA_ESTADOS[0];
     if (detail) {
@@ -2705,6 +2984,37 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
                                 <input value={detail.cierre || ''} onChange={e => upd(detail.id, { cierre: e.target.value })} placeholder="dd/mm/aa" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: T.text, padding: 0 }} />
                             </div>
                         </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                            <div style={{ background: T.bg, borderRadius: T.rsm, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 10, color: T.muted, marginBottom: 5, textTransform: "uppercase" }}>Presupuesto</div>
+                                <input value={detail.monto || ''} onChange={e => upd(detail.id, { monto: e.target.value })} placeholder="$ 0" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: T.text, padding: 0 }} />
+                            </div>
+                            <div style={{ background: detail.pagado > 0 ? "#ECFDF5" : T.bg, borderRadius: T.rsm, padding: "10px 12px" }}>
+                                <div style={{ fontSize: 10, color: T.muted, marginBottom: 5, textTransform: "uppercase" }}>💰 Pagado</div>
+                                <input value={detail.pagado || ''} onChange={e => { const v = e.target.value.replace(/[^0-9.]/g,''); upd(detail.id, { pagado: v ? parseFloat(v) : 0 }); }} placeholder="$ 0" style={{ width: "100%", background: "transparent", border: "none", fontSize: 12, fontWeight: 600, color: "#10B981", padding: 0 }} />
+                            </div>
+                        </div>
+                        {(detail.monto || detail.pagado > 0) && (() => {
+                            const total = parseFloat(String(detail.monto || '0').replace(/[^0-9.]/g,'')) || 0;
+                            const pagado = parseFloat(detail.pagado || 0);
+                            const saldo = total - pagado;
+                            const pct = total > 0 ? Math.round(pagado / total * 100) : 0;
+                            return total > 0 ? (
+                                <div style={{ background: pct > 80 ? "#FEF2F2" : "#F0FDF4", border: `1px solid ${pct > 80 ? "#FECACA" : "#86EFAC"}`, borderRadius: T.rsm, padding: "10px 12px", marginBottom: 14 }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                                        <span style={{ fontSize: 11, color: T.muted }}>Presupuesto consumido</span>
+                                        <span style={{ fontSize: 12, fontWeight: 800, color: pct > 80 ? "#EF4444" : "#10B981" }}>{pct}%</span>
+                                    </div>
+                                    <div style={{ height: 6, background: "#E2E8F0", borderRadius: 3, marginBottom: 8 }}>
+                                        <div style={{ height: 6, background: pct > 80 ? "#EF4444" : "#10B981", borderRadius: 3, width: `${Math.min(pct,100)}%`, transition: "width .5s" }} />
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                                        <span style={{ color: T.muted }}>Pagado: <b style={{ color: "#10B981" }}>${pagado.toLocaleString('es-AR')}</b></span>
+                                        <span style={{ color: T.muted }}>Saldo: <b style={{ color: saldo < 0 ? "#EF4444" : T.text }}>${saldo.toLocaleString('es-AR')}</b></span>
+                                    </div>
+                                </div>
+                            ) : null;
+                        })()}
                         <Lbl>{t(cfg, 'obras_estado')}</Lbl>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>{OBRA_ESTADOS.map(e => (<button key={e.id} onClick={() => upd(detail.id, { estado: e.id })} style={{ padding: "9px", borderRadius: T.rsm, border: `1.5px solid ${detail.estado === e.id ? e.color : T.border}`, background: detail.estado === e.id ? e.bg : T.card, color: e.color, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{e.label}</button>))}</div>
                         <button onClick={() => { setObras(p => p.filter(o => o.id !== detail.id)); setDetailId(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'obras_eliminar')}</button>
@@ -2726,10 +3036,11 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
 
 function Personal({ personal, setPersonal, obras, cfg }) {
     const [showNew, setShowNew] = useState(false); const [expanded, setExpanded] = useState(null);
-    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "" });
+    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] });
     const fileRefs = useRef({}); const fotoRefs = useRef({}); const newFotoRef = useRef(null);
+    const [nuevaTarea, setNuevaTarea] = useState({});
     function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); }
-    function add() { if (!form.nombre.trim()) return; setPersonal(p => [...p, { ...form, id: uid(), docs: {} }]); setForm({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "" }); setShowNew(false); }
+    function add() { if (!form.nombre.trim()) return; setPersonal(p => [...p, { ...form, id: uid(), docs: {} }]); setForm({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] }); setShowNew(false); }
     function upd(id, patch) { setPersonal(p => p.map(x => x.id === id ? { ...x, ...patch } : x)); }
     async function handleDoc(pid, did, file) { const url = await toDataUrl(file); setPersonal(p => p.map(x => x.id === pid ? { ...x, docs: { ...x.docs, [did]: { nombre: file.name, url, vence: "" } } } : x)); }
     function setVence(pid, did, val) { setPersonal(p => p.map(x => x.id === pid ? { ...x, docs: { ...x.docs, [did]: { ...x.docs[did], vence: val } } } : x)); }
@@ -2756,6 +3067,37 @@ function Personal({ personal, setPersonal, obras, cfg }) {
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, margin: "6px 0 12px" }}>
                             {DOC_TYPES.map(d => { const doc = p.docs?.[d.id]; const rk = `${p.id}_${d.id}`; const exp = doc?.vence && daysSince(doc.vence) <= 5; return (<div key={d.id}><input type="file" style={{ display: "none" }} ref={el => fileRefs.current[rk] = el} onChange={e => { if (e.target.files[0]) handleDoc(p.id, d.id, e.target.files[0]); e.target.value = ""; }} />{doc ? (<div style={{ background: exp ? "#FFFBEB" : "#F0FDF4", border: `1.5px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 10, padding: "9px 10px" }}><div style={{ fontSize: 10, fontWeight: 700, color: exp ? "#92400E" : "#15803D", marginBottom: 2 }}>{d.label}</div><div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{doc.nombre}</div>{d.acceptsExp && <input type="text" placeholder="Vence dd/mm/aa" value={doc.vence || ""} onChange={e => setVence(p.id, d.id, e.target.value)} style={{ width: "100%", fontSize: 10, padding: "4px 6px", border: `1px solid ${T.border}`, borderRadius: 6, background: "#fff", color: T.text, marginBottom: 6 }} />}<div style={{ display: "flex", gap: 4 }}><a href={doc.url} download={doc.nombre} style={{ textDecoration: "none", flex: 1 }}><button style={{ width: "100%", background: "none", border: `1px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 6, padding: "4px 0", fontSize: 9, color: exp ? "#92400E" : "#15803D", fontWeight: 600, cursor: "pointer" }}>↓ Ver</button></a><button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, docs: { ...x.docs, [d.id]: null } } : x))} style={{ background: "none", border: "1px solid #FCA5A5", borderRadius: 6, padding: "4px 7px", fontSize: 9, color: "#EF4444", cursor: "pointer" }}>✕</button></div></div>) : (<button onClick={() => fileRefs.current[rk]?.click()} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 3 }}>{d.label.slice(0, 3).toUpperCase()}</div><div style={{ fontSize: 10, fontWeight: 600, color: T.sub }}>{d.label}</div></button>)}</div>); })}
                         </div>
+                        <div style={{ marginBottom: 10 }}>
+                            <Lbl>Tareas asignadas</Lbl>
+                            <div style={{ display: 'flex', gap: 6, marginBottom: 8, marginTop: 4 }}>
+                                <input
+                                    value={nuevaTarea[p.id] || ''}
+                                    onChange={e => setNuevaTarea(prev => ({ ...prev, [p.id]: e.target.value }))}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter' && nuevaTarea[p.id]?.trim()) {
+                                            setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x));
+                                            setNuevaTarea(prev => ({ ...prev, [p.id]: '' }));
+                                        }
+                                    }}
+                                    placeholder="Nueva tarea..."
+                                    style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: '8px 12px', fontSize: 12, color: T.text }}
+                                />
+                                <button onClick={() => {
+                                    if (!nuevaTarea[p.id]?.trim()) return;
+                                    setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x));
+                                    setNuevaTarea(prev => ({ ...prev, [p.id]: '' }));
+                                }} style={{ background: T.accent, border: 'none', borderRadius: T.rsm, padding: '8px 14px', fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', flexShrink: 0 }}>+ Agregar</button>
+                            </div>
+                            {(p.tareas || []).length === 0 && <div style={{ fontSize: 12, color: T.muted, fontStyle: 'italic' }}>Sin tareas asignadas</div>}
+                            {(p.tareas || []).map(t => (
+                                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: t.done ? '#F0FDF4' : '#FFFBEB', border: `1px solid ${t.done ? '#86EFAC' : '#FDE68A'}`, borderRadius: 8, padding: '7px 10px', marginBottom: 5 }}>
+                                    <input type="checkbox" checked={t.done} onChange={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.map(tk => tk.id === t.id ? { ...tk, done: !tk.done } : tk) } : x))} style={{ accentColor: T.accent, width: 15, height: 15, flexShrink: 0 }} />
+                                    <span style={{ flex: 1, fontSize: 12, color: T.text, textDecoration: t.done ? 'line-through' : 'none' }}>{t.txt}</span>
+                                    <span style={{ fontSize: 10, color: T.muted }}>{t.fecha}</span>
+                                    <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.filter(tk => tk.id !== t.id) } : x))} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', fontSize: 12, padding: 2 }}>✕</button>
+                                </div>
+                            ))}
+                        </div>
                         <button onClick={() => { setPersonal(prev => prev.filter(x => x.id !== p.id)); if (expanded === p.id) setExpanded(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'pers_eliminar')}</button>
                     </div>)}
                 </Card>);
@@ -2767,6 +3109,14 @@ function Personal({ personal, setPersonal, obras, cfg }) {
             <FieldRow><Field label={t(cfg, 'pers_rol')}><Sel value={form.rol} onChange={e => setForm(p => ({ ...p, rol: e.target.value }))}>{ROLES.map(r => <option key={r}>{r}</option>)}</Sel></Field><Field label={t(cfg, 'pers_empresa')}><TInput value={form.empresa} onChange={e => setForm(p => ({ ...p, empresa: e.target.value }))} placeholder="BelfastCM" /></Field></FieldRow>
             <Field label={t(cfg, 'pers_whatsapp')}><TInput value={form.telefono} onChange={e => setForm(p => ({ ...p, telefono: e.target.value.replace(/\D/g, '') }))} placeholder="5491155556666" /></Field>
             <Field label={t(cfg, 'pers_obra')}><Sel value={form.obra_id} onChange={e => setForm(p => ({ ...p, obra_id: e.target.value }))}><option value="">Sin asignar</option>{obras.map(o => <option key={o.id} value={o.id}>{o.nombre}</option>)}</Sel></Field>
+            <div style={{ background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#0369A1", marginBottom: 8 }}>🔑 Acceso a la app</div>
+                <FieldRow>
+                    <Field label="Usuario"><TInput value={form.appUser || ''} onChange={e => setForm(p => ({ ...p, appUser: e.target.value.toLowerCase().trim() }))} placeholder="usuario" autoCapitalize="none" /></Field>
+                    <Field label="Contraseña"><TInput value={form.appPass || ''} onChange={e => setForm(p => ({ ...p, appPass: e.target.value }))} placeholder="••••••" /></Field>
+                </FieldRow>
+                <Field label="Panel"><Sel value={form.nivel || 'empleado'} onChange={e => setForm(p => ({ ...p, nivel: e.target.value }))}><option value="empleado">👷 Empleado (panel básico)</option><option value="directivo">👔 Directivo (panel completo)</option></Sel></Field>
+            </div>
             <PBtn full onClick={add} disabled={!form.nombre.trim()}>{t(cfg, 'pers_agregar')}</PBtn>
         </Sheet>)}
     </div>);
@@ -2789,9 +3139,11 @@ function CargarView({ obras, setObras, cargarState, setCargarState, apiKey }) {
             content.push({ type: 'text', text: `Generá informe de avance para "${obra.nombre}" (${AIRPORTS.find(a => a.id === obra.ap)?.code}). Avance: ${obra.avance}%. ${pTxt} Incluí: estado general, trabajos observados, comparación, alertas de seguridad y recomendaciones. Formato profesional AA2000.` });
             let reportText = '';
             if (typeof window !== 'undefined' && window.claude?.complete) {
-                const imgMsgs = content.filter(b => b.type === 'image');
                 const txtMsg = content.find(b => b.type === 'text');
-                reportText = await window.claude.complete(txtMsg?.text || 'Analizá estas fotos.');
+                const nFotos = content.filter(b => b.type === 'image').length;
+                reportText = await window.claude.complete(`${txtMsg?.text || 'Analizá estas fotos.'}
+
+Analizá el estado de avance de esta obra basándote en la descripción. Generá un informe técnico profesional en español.`);
             } else {
                 if (!apiKey) { setReport('⚠ Configurá tu API Key en Más → Configuración.'); setLoading(false); return; }
                 const headers = { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true", "anthropic-version": "2023-06-01", "x-api-key": apiKey };
@@ -3112,10 +3464,112 @@ const CfgSection = memo(({ id, title, icon, children, openSec, setOpenSec }) => 
     </div>);
 });
 
-function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, setApiKey, cfgLocked, setCfgLocked, lics, obras, personal, alerts }) {
+// Library of SF-style technical icons for construction management
+const ICON_LIBRARY = [
+    { id: 'eye', label: 'Ojo', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path fillRule="evenodd" d="M1.323 11.447C2.811 6.976 7.028 3.75 12.001 3.75c4.97 0 9.185 3.223 10.675 7.69.12.362.12.752 0 1.113-1.487 4.471-5.705 7.697-10.677 7.697-4.97 0-9.186-3.223-10.675-7.69a1.762 1.762 0 010-1.113zM17.25 12a5.25 5.25 0 11-10.5 0 5.25 5.25 0 0110.5 0z" clipRule="evenodd"/></svg>' },
+    { id: 'doc', label: 'Documento', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0016.5 9h-1.875a1.875 1.875 0 01-1.875-1.875V5.25A3.75 3.75 0 009 1.5H5.625zM7.5 15a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5A.75.75 0 017.5 15zm.75-6.75a.75.75 0 000 1.5H12a.75.75 0 000-1.5H8.25z" clipRule="evenodd"/><path d="M12.971 1.816A5.23 5.23 0 0114.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 013.434 1.279 9.768 9.768 0 00-6.963-6.963z"/></svg>' },
+    { id: 'chart', label: 'Gráfico', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M18.375 2.25c-1.035 0-1.875.84-1.875 1.875v15.75c0 1.035.84 1.875 1.875 1.875h.75c1.035 0 1.875-.84 1.875-1.875V4.125c0-1.036-.84-1.875-1.875-1.875h-.75zM9.75 8.625c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-.75a1.875 1.875 0 01-1.875-1.875V8.625zM3 13.125c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v6.75c0 1.035-.84 1.875-1.875 1.875h-.75A1.875 1.875 0 013 19.875v-6.75z"/></svg>' },
+    { id: 'chat', label: 'Chat', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M4.913 2.658c2.075-.27 4.19-.408 6.337-.408 2.147 0 4.262.139 6.337.408 1.922.25 3.291 1.861 3.405 3.727a4.403 4.403 0 00-1.032-.211 50.89 50.89 0 00-8.42 0c-2.358.196-4.04 2.19-4.04 4.434v4.286a4.47 4.47 0 002.433 3.984L7.28 21.53A.75.75 0 016 21v-4.03a48.527 48.527 0 01-1.087-.128C2.905 16.58 1.5 14.833 1.5 12.862V6.638c0-1.97 1.405-3.718 3.413-3.979z"/><path d="M15.75 7.5c-1.376 0-2.739.057-4.086.169C10.124 7.797 9 9.103 9 10.609v4.285c0 1.507 1.128 2.814 2.67 2.94 1.243.102 2.5.157 3.768.165l2.782 2.781a.75.75 0 001.28-.53v-2.39l.33-.026c1.542-.126 2.67-1.433 2.67-2.94v-4.286c0-1.505-1.125-2.811-2.664-2.94A49.392 49.392 0 0015.75 7.5z"/></svg>' },
+    { id: 'cart', label: 'Carrito', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 00-3 3h15.75m-12.75-3h11.218c1.121-2.3 2.1-4.684 2.924-7.138a60.114 60.114 0 00-16.536-1.84M7.5 14.25L5.106 5.272M6 20.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zm12.75 0a.75.75 0 11-1.5 0 .75.75 0 011.5 0z"/></svg>' },
+    { id: 'bell', label: 'Alerta', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M5.25 9a6.75 6.75 0 0113.5 0v.75c0 2.123.8 4.057 2.118 5.52a.75.75 0 01-.297 1.206c-1.544.57-3.16.99-4.831 1.243a3.75 3.75 0 11-7.48 0 24.585 24.585 0 01-4.831-1.244.75.75 0 01-.298-1.205A8.217 8.217 0 005.25 9.75V9zm4.502 8.9a2.25 2.25 0 104.496 0 25.057 25.057 0 01-4.496 0z" clipRule="evenodd"/></svg>' },
+    { id: 'folder', label: 'Carpeta', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19.906 9c.382 0 .749.057 1.094.162V9a3 3 0 00-3-3h-3.879a.75.75 0 01-.53-.22L11.47 3.66A2.25 2.25 0 009.879 3H6a3 3 0 00-3 3v3.162A3.756 3.756 0 014.094 9h15.812zM4.094 10.5a2.25 2.25 0 00-2.227 2.568l.857 6A2.25 2.25 0 004.951 21H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-2.227-2.568H4.094z"/></svg>' },
+    { id: 'cal', label: 'Calendario', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm13.5 9a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5z" clipRule="evenodd"/></svg>' },
+    { id: 'users', label: 'Personas', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M4.5 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM14.25 8.625a3.375 3.375 0 116.75 0 3.375 3.375 0 01-6.75 0zM1.5 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 01-.233.96 10.088 10.088 0 005.06-1.01.75.75 0 00.42-.643 4.875 4.875 0 00-6.957-4.611 8.586 8.586 0 011.71 5.157v.003z"/></svg>' },
+    { id: 'map', label: 'Mapa', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M8.161 2.58a1.875 1.875 0 011.678 0l4.993 2.498c.106.052.23.052.336 0l3.869-1.935A1.875 1.875 0 0121.75 4.82v12.485c0 .71-.401 1.36-1.037 1.677l-4.875 2.437a1.875 1.875 0 01-1.676 0l-4.994-2.497a.375.375 0 00-.336 0l-3.868 1.935A1.875 1.875 0 012.25 19.18V6.695c0-.71.401-1.36 1.036-1.677l4.875-2.437zM9 6a.75.75 0 01.75.75V15a.75.75 0 01-1.5 0V6.75A.75.75 0 019 6zm6.75 3a.75.75 0 00-1.5 0v8.25a.75.75 0 001.5 0V9z" clipRule="evenodd"/></svg>' },
+    { id: 'globe', label: 'Globo', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M21.721 12.752a9.711 9.711 0 00-.945-5.003 12.754 12.754 0 01-4.339 2.708 18.991 18.991 0 01-.214 4.772 17.165 17.165 0 005.498-2.477zM14.634 15.55a17.324 17.324 0 00.332-4.647c-.952.227-1.945.347-2.966.347-1.021 0-2.014-.12-2.966-.347a17.515 17.515 0 00.332 4.647 17.385 17.385 0 005.268 0zM9.772 17.119a18.963 18.963 0 004.456 0A17.182 17.182 0 0112 21.724a17.18 17.18 0 01-2.228-4.605zM7.777 15.23a18.87 18.87 0 01-.214-4.774 12.753 12.753 0 01-4.34-2.708 9.711 9.711 0 00-.944 5.004 17.165 17.165 0 005.498 2.477zM21.356 14.752a9.765 9.765 0 01-7.478 6.817 18.64 18.64 0 001.988-4.718 18.627 18.627 0 005.49-2.098zM2.644 14.752c1.683.971 3.53 1.688 5.49 2.099a18.64 18.64 0 001.988 4.718 9.765 9.765 0 01-7.478-6.816zM13.878 2.43a9.755 9.755 0 016.116 3.986 11.267 11.267 0 01-3.746 2.504 18.63 18.63 0 00-2.37-6.49zM12 2.276a17.152 17.152 0 012.805 7.121c-.897.23-1.837.353-2.805.353-.968 0-1.908-.122-2.805-.353A17.151 17.151 0 0112 2.276zM10.122 2.43a18.629 18.629 0 00-2.37 6.49 11.266 11.266 0 01-3.746-2.504 9.754 9.754 0 016.116-3.985z"/></svg>' },
+    { id: 'tool', label: 'Herramienta', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M12 6.75a5.25 5.25 0 016.775-5.025.75.75 0 01.313 1.248l-3.32 3.319c.063.475.276.934.641 1.299.365.365.824.578 1.3.641l3.318-3.319a.75.75 0 011.248.313 5.25 5.25 0 01-5.472 6.756c-1.018-.086-1.87.1-2.309.634L7.344 21.3A3.298 3.298 0 112.7 16.657l8.684-7.151c.533-.44.72-1.291.634-2.309A5.342 5.342 0 0112 6.75zM4.117 19.125a.75.75 0 01.75-.75h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75h-.008a.75.75 0 01-.75-.75v-.008z" clipRule="evenodd"/></svg>' },
+    { id: 'shield', label: 'Seguridad', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M12.516 2.17a.75.75 0 00-1.032 0 11.209 11.209 0 01-7.877 3.08.75.75 0 00-.722.515A12.74 12.74 0 002.25 9.75c0 5.942 4.064 10.933 9.563 12.348a.749.749 0 00.374 0c5.499-1.415 9.563-6.406 9.563-12.348 0-1.39-.223-2.73-.635-3.985a.75.75 0 00-.722-.516l-.143.001c-2.996 0-5.717-1.17-7.734-3.08zm3.094 8.016a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clipRule="evenodd"/></svg>' },
+    { id: 'home', label: 'Casa', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M11.47 3.84a.75.75 0 011.06 0l8.69 8.69a.75.75 0 101.06-1.061l-8.689-8.69a2.25 2.25 0 00-3.182 0l-8.69 8.69a.75.75 0 001.061 1.06l8.69-8.689z"/><path d="M12 5.432l8.159 8.159.091.086v6.198c0 1.035-.84 1.875-1.875 1.875H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75.75V21a.75.75 0 01-.75.75H5.625a1.875 1.875 0 01-1.875-1.875v-6.198l.091-.086L12 5.43z"/></svg>' },
+    { id: 'crane', label: 'Grúa', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h2v18H3zm3 0h2v4H6zm0 6h2v12H6zm3-6h2v2H9zm0 4h2v14H9zm3-4h8v2H12zm0 4h8v2H12zm1 4h6v8h-6z"/></svg>' },
+    { id: 'cash', label: 'Dinero', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7.5a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z"/><path fillRule="evenodd" d="M1.5 4.875C1.5 3.839 2.34 3 3.375 3h17.25c1.035 0 1.875.84 1.875 1.875v9.75c0 1.036-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 011.5 14.625v-9.75zM8.25 9.75a3.75 3.75 0 117.5 0 3.75 3.75 0 01-7.5 0zM18.75 9a.75.75 0 00-.75.75v.008c0 .414.336.75.75.75h.008a.75.75 0 00.75-.75V9.75a.75.75 0 00-.75-.75h-.008zM4.5 9.75A.75.75 0 015.25 9h.008a.75.75 0 01.75.75v.008a.75.75 0 01-.75.75H5.25a.75.75 0 01-.75-.75V9.75z" clipRule="evenodd"/><path d="M2.25 18a.75.75 0 000 1.5c5.4 0 10.63.722 15.6 2.075 1.19.324 2.4-.558 2.4-1.82V18.75a.75.75 0 00-.75-.75H2.25z"/></svg>' },
+    { id: 'phone', label: 'Teléfono', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M1.5 4.5a3 3 0 013-3h1.372c.86 0 1.61.586 1.819 1.42l1.105 4.423a1.875 1.875 0 01-.694 1.955l-1.293.97c-.135.101-.164.249-.126.352a11.285 11.285 0 006.697 6.697c.103.038.25.009.352-.126l.97-1.293a1.875 1.875 0 011.955-.694l4.423 1.105c.834.209 1.42.959 1.42 1.82V19.5a3 3 0 01-3 3h-2.25C8.552 22.5 1.5 15.448 1.5 6.75V4.5z" clipRule="evenodd"/></svg>' },
+    { id: 'clock', label: 'Reloj', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 6a.75.75 0 00-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 000-1.5h-3.75V6z" clipRule="evenodd"/></svg>' },
+    { id: 'star', label: 'Estrella', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l2.082 5.007 5.404.433c1.164.093 1.636 1.545.749 2.305l-4.117 3.527 1.257 5.273c.271 1.136-.964 2.033-1.96 1.425L12 18.354 7.373 21.18c-.996.608-2.231-.29-1.96-1.425l1.257-5.273-4.117-3.527c-.887-.76-.415-2.212.749-2.305l5.404-.433 2.082-5.006z" clipRule="evenodd"/></svg>' },
+    { id: 'info', label: 'Info', svg: '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm8.706-1.442c1.146-.573 2.437.463 2.126 1.706l-.709 2.836.042-.02a.75.75 0 01.67 1.34l-.04.022c-1.147.573-2.438-.463-2.127-1.706l.71-2.836-.042.02a.75.75 0 11-.671-1.34l.041-.022zM12 9a.75.75 0 100-1.5A.75.75 0 0012 9z" clipRule="evenodd"/></svg>' },
+];
+
+function IconPickerModal({ item, customIcons, onSave, onClose }) {
+    const [tab, setTab] = useState('library'); // 'library' | 'upload'
+    const fileRef = useRef(null);
+    
+    function selectLibraryIcon(ic) {
+        const newIcons = { ...customIcons, [item.id]: { type: 'svg', src: ic.svg } };
+        onSave(newIcons);
+        onClose();
+    }
+    
+    function resetIcon() {
+        const newIcons = { ...customIcons };
+        delete newIcons[item.id];
+        onSave(newIcons);
+        onClose();
+    }
+    
+    async function handleUpload(e) {
+        const f = e.target.files[0];
+        if (!f) return;
+        const url = await toDataUrl(f, 200);
+        const newIcons = { ...customIcons, [item.id]: { type: 'img', src: url } };
+        onSave(newIcons);
+        onClose();
+    }
+    
+    return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }}>
+            <div style={{ background: T.card, borderRadius: '20px 20px 0 0', width: '100%', maxHeight: '75vh', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ padding: '16px 18px 12px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>Icono: {item.label}</div>
+                    <button onClick={onClose} style={{ background: T.bg, border: 'none', borderRadius: 8, width: 30, height: 30, fontSize: 16, cursor: 'pointer', color: T.muted }}>✕</button>
+                </div>
+                <div style={{ display: 'flex', borderBottom: `1px solid ${T.border}` }}>
+                    {['library', 'upload'].map(t => (
+                        <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '10px', background: 'none', border: 'none', fontSize: 12, fontWeight: tab === t ? 700 : 500, color: tab === t ? T.accent : T.muted, borderBottom: `2px solid ${tab === t ? T.accent : 'transparent'}`, cursor: 'pointer' }}>
+                            {t === 'library' ? '📚 Biblioteca' : '📷 Subir imagen'}
+                        </button>
+                    ))}
+                </div>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
+                    {tab === 'library' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                            {ICON_LIBRARY.map(ic => (
+                                <button key={ic.id} onClick={() => selectLibraryIcon(ic)} style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 12, padding: '12px 8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ color: T.accent }} dangerouslySetInnerHTML={{ __html: ic.svg }} />
+                                    <div style={{ fontSize: 9, color: T.muted, fontWeight: 600 }}>{ic.label}</div>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {tab === 'upload' && (
+                        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                            <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleUpload} />
+                            <div style={{ fontSize: 40, marginBottom: 12 }}>🖼</div>
+                            <div style={{ fontSize: 13, color: T.muted, marginBottom: 16 }}>Subí una imagen PNG, SVG o JPG</div>
+                            <button onClick={() => fileRef.current?.click()} style={{ background: T.accent, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Elegir imagen</button>
+                        </div>
+                    )}
+                </div>
+                <div style={{ padding: '12px 18px', borderTop: `1px solid ${T.border}` }}>
+                    <button onClick={resetIcon} style={{ width: '100%', background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 10, padding: '11px', fontSize: 13, fontWeight: 600, color: T.sub, cursor: 'pointer' }}>↩ Restaurar icono original</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
+function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, setApiKey, cfgLocked, setCfgLocked, lics, obras, personal, alerts, currentUser }) {
     const [showConfig, setShowConfig] = useState(false);
     const [openSec, setOpenSec] = useState("cuenta");
     const [localCfg, setLocalCfg] = useState({ ...DEFAULT_CONFIG, ...cfg });
+    const [editIconMode, setEditIconMode] = useState(false);
+    const [iconPickerFor, setIconPickerFor] = useState(null);
+    const [customIcons, setCustomIcons] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('bcm_icons') || '{}'); } catch { return {}; }
+    });
+    const saveCustomIcons = (icons) => {
+        setCustomIcons(icons);
+        localStorage.setItem('bcm_icons', JSON.stringify(icons));
+    };
     const [localKey, setLocalKey] = useState(apiKey || '');
     const [showKey, setShowKey] = useState(false);
     const [hasUnsaved, setHasUnsaved] = useState(false);
@@ -3203,6 +3657,10 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
         { id: "licitaciones", label: "Licitaciones", sub: "Gestión y seguimiento", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0016.5 9h-1.875a1.875 1.875 0 01-1.875-1.875V5.25A3.75 3.75 0 009 1.5H5.625zM7.5 15a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5A.75.75 0 017.5 15zm.75-6.75a.75.75 0 000 1.5H12a.75.75 0 000-1.5H8.25z" /><path d="M12.971 1.816A5.23 5.23 0 0114.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 013.434 1.279 9.768 9.768 0 00-6.963-6.963z" /></svg> },
         { id: "resumen", label: "Resumen ejecutivo", sub: "Indicadores y avances", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.375 2.25c-1.035 0-1.875.84-1.875 1.875v15.75c0 1.035.84 1.875 1.875 1.875h.75c1.035 0 1.875-.84 1.875-1.875V4.125c0-1.036-.84-1.875-1.875-1.875h-.75zM9.75 8.625c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-.75a1.875 1.875 0 01-1.875-1.875V8.625zM3 13.125c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v6.75c0 1.035-.84 1.875-1.875 1.875h-.75A1.875 1.875 0 013 19.875v-6.75z" /></svg> },
         { id: "mensajes", label: "Mensajes internos", sub: "Comunicaciones del equipo", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4.913 2.658c2.075-.27 4.19-.408 6.337-.408 2.147 0 4.262.139 6.337.408 1.922.25 3.291 1.861 3.405 3.727a4.403 4.403 0 00-1.032-.211 50.89 50.89 0 00-8.42 0c-2.358.196-4.04 2.19-4.04 4.434v4.286a4.47 4.47 0 002.433 3.984L7.28 21.53A.75.75 0 016 21v-4.03a48.527 48.527 0 01-1.087-.128C2.905 16.58 1.5 14.833 1.5 12.862V6.638c0-1.97 1.405-3.718 3.413-3.979z" /><path d="M15.75 7.5c-1.376 0-2.739.057-4.086.169C10.124 7.797 9 9.103 9 10.609v4.285c0 1.507 1.128 2.814 2.67 2.94 1.243.102 2.5.157 3.768.165l2.782 2.781a.75.75 0 001.28-.53v-2.39l.33-.026c1.542-.126 2.67-1.433 2.67-2.94v-4.286c0-1.505-1.125-2.811-2.664-2.94A49.392 49.392 0 0015.75 7.5z" /></svg> },
+        { id: "proveedores", label: "Proveedores", sub: "Gestión de proveedores y contactos", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 00-3 3h15.75m-12.75-3h11.218c1.121-2.3 2.1-4.684 2.924-7.138a60.114 60.114 0 00-16.536-1.84M7.5 14.25L5.106 5.272M6 20.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zm12.75 0a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" /></svg> },
+        { id: "info_externa", label: "Info externa", sub: "Dólar · Clima · Maps · Tráfico", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253M3.157 7.582A8.959 8.959 0 003 12c0 .778.099 1.533.284 2.253" /></svg> },
+        { id: "info_util", label: "Info útil", sub: "Cotizaciones y clima en tiempo real", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.25a.75.75 0 01.75.75v2.25a.75.75 0 01-1.5 0V3a.75.75 0 01.75-.75zM7.5 12a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM18.894 6.166a.75.75 0 00-1.06-1.06l-1.591 1.59a.75.75 0 101.06 1.061l1.591-1.59zM21.75 12a.75.75 0 01-.75.75h-2.25a.75.75 0 010-1.5H21a.75.75 0 01.75.75zM17.834 18.894a.75.75 0 001.06-1.06l-1.59-1.591a.75.75 0 10-1.061 1.06l1.59 1.591zM12 18a.75.75 0 01.75.75V21a.75.75 0 01-1.5 0v-2.25A.75.75 0 0112 18zM7.166 17.834a.75.75 0 00-1.06 1.06l1.59 1.591a.75.75 0 001.061-1.06l-1.59-1.591zM6 12a.75.75 0 01-.75.75H3a.75.75 0 010-1.5h2.25A.75.75 0 016 12zM6.166 6.166a.75.75 0 001.06 1.06l1.59-1.59a.75.75 0 10-1.06-1.061L6.166 6.166z" /></svg> },
+        { id: "gantt", label: "Diagrama de Gantt", sub: "Cronograma con pronóstico de lluvia", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zm13.5 9a1.5 1.5 0 00-1.5-1.5H5.25a1.5 1.5 0 00-1.5 1.5v7.5a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5v-7.5z" /></svg> },
         { id: "archivos", label: "Archivos", sub: "PDFs, planos, Excel", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19.906 9c.382 0 .749.057 1.094.162V9a3 3 0 00-3-3h-3.879a.75.75 0 01-.53-.22L11.47 3.66A2.25 2.25 0 009.879 3H6a3 3 0 00-3 3v3.162A3.756 3.756 0 014.094 9h15.812zM4.094 10.5a2.25 2.25 0 00-2.227 2.568l.857 6A2.25 2.25 0 004.951 21H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-2.227-2.568H4.094z" /></svg> },
         { id: "seguimiento", label: "Seguimiento", sub: "Alertas y pendientes", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M5.25 9a6.75 6.75 0 0113.5 0v.75c0 2.123.8 4.057 2.118 5.52a.75.75 0 01-.297 1.206c-1.544.57-3.16.99-4.831 1.243a3.75 3.75 0 11-7.48 0 24.585 24.585 0 01-4.831-1.244.75.75 0 01-.298-1.205A8.217 8.217 0 005.25 9.75V9zm4.502 8.9a2.25 2.25 0 104.496 0 25.057 25.057 0 01-4.496 0z" /></svg> },
         { id: "contactos", label: "Contactos", sub: "Agenda y emails", icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z" /><path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 5.978a1.5 1.5 0 001.572 0L22.5 6.908z" /></svg> },
@@ -3213,11 +3671,21 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
         <AppHeader title="Más opciones" right={authed && <button onClick={() => setAuthed(null)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>Cerrar sesión</button>} />
         {authed && <div style={{ margin: "12px 18px 0", background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 12, padding: "10px 14px", display: "flex", gap: 8, alignItems: "center" }}><svg width="16" height="16" viewBox="0 0 24 24" fill="#10B981"><path fillRule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z" clipRule="evenodd" /></svg><span style={{ fontSize: 12, color: "#15803D", fontWeight: 600 }}>Sesión activa: {authed.rol}</span></div>}
         <div style={{ padding: "14px 18px" }}>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
-                {MAS_ITEMS.map(item => (<button key={item.id} onClick={() => setView(item.id)} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "14px 8px 12px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, boxShadow: T.shadow, textAlign: "center" }}>
-                    <div style={{ width: 40, height: 40, borderRadius: T.rsm, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, flexShrink: 0 }}>{item.icon}</div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: T.text, lineHeight: 1.3 }}>{item.label}</div>
-                </button>))}
+                {MAS_ITEMS.filter(item => {
+                    if (['resumen', 'vigilancia'].includes(item.id) && !isDirectivo(currentUser)) return false;
+                    return true;
+                }).map(item => {
+                    const ci = customIcons[item.id];
+                    return (<button key={item.id} onClick={() => setView(item.id)}
+                        style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "14px 8px 12px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, boxShadow: T.shadow, textAlign: "center" }}>
+                        <div style={{ width: 40, height: 40, borderRadius: T.rsm, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, flexShrink: 0, overflow: "hidden" }}>
+                            {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 28, height: 28, objectFit: "contain" }} /> : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24 }} /> : item.icon}
+                        </div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: T.text, lineHeight: 1.3 }}>{item.label}</div>
+                    </button>);
+                })}
             </div>
             <div style={{ height: 1, background: T.border, margin: "4px 0 14px" }} />
             <Card onClick={() => { if (cfgLocked) setShowUnlockModal(true); else requireAuth(() => setShowConfig(true), "Configuración"); }} style={{ padding: "15px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, border: `1.5px solid ${cfgLocked ? "#EF4444" : T.accent}`, background: cfgLocked ? "#FEF2F2" : T.accentLight }}>
@@ -3454,6 +3922,49 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
                 <button onClick={() => setLocalCfg(p => ({ ...p, textos: { ...DEFAULT_TEXTOS } }))} style={{ width: "100%", background: T.bg, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "8px 14px", fontSize: 12, color: T.sub, cursor: "pointer", marginTop: 4 }}>↺ Restaurar textos por defecto</button>
             </CfgSection>
 
+            <CfgSection id="iconos" title="Iconos del menú" icon="🎨" openSec={openSec} setOpenSec={handleSetOpenSec}>
+                <div style={{ fontSize: 11, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>Tocá cualquier ícono para cambiarlo. Podés elegir de la biblioteca o subir tu propia imagen.</div>
+                
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Acciones rápidas</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+                    {[{ id: "qa_lic", label: "Nueva licitación", defaultIcon: "📋" }, { id: "qa_obra", label: "Nueva obra", defaultIcon: "🏗" }, { id: "qa_mat", label: "Materiales", defaultIcon: "📦" }, { id: "qa_sub", label: "Subcontratos", defaultIcon: "🤝" }].map(item => {
+                        const ci = customIcons[item.id];
+                        return (
+                            <button key={item.id} onClick={() => setIconPickerFor({ id: item.id, label: item.label })}
+                                style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 12, padding: "10px 6px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, position: "relative" }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, overflow: "hidden", fontSize: 20 }}>
+                                    {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 26, height: 26, objectFit: "contain" }} />
+                                    : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", width: 22, height: 22 }} />
+                                    : item.defaultIcon}
+                                </div>
+                                <div style={{ fontSize: 8, color: T.muted, fontWeight: 600, lineHeight: 1.2, textAlign: "center" }}>{item.label}</div>
+                                {ci && <div style={{ position: "absolute", top: 3, right: 3, width: 10, height: 10, background: "#10B981", borderRadius: "50%" }} />}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Menú principal</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                    {MAS_ITEMS.map(item => {
+                        const ci = customIcons[item.id];
+                        return (
+                            <button key={item.id} onClick={() => setIconPickerFor(item)}
+                                style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 12, padding: "10px 6px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, position: "relative" }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", color: T.accent, overflow: "hidden" }}>
+                                    {ci?.type === 'img' ? <img src={ci.src} alt="" style={{ width: 26, height: 26, objectFit: "contain" }} />
+                                    : ci?.type === 'svg' ? <span dangerouslySetInnerHTML={{ __html: ci.src }} style={{ display: "flex", width: 22, height: 22 }} />
+                                    : item.icon}
+                                </div>
+                                <div style={{ fontSize: 8, color: T.muted, fontWeight: 600, lineHeight: 1.2, textAlign: "center" }}>{item.label}</div>
+                                {ci && <div style={{ position: "absolute", top: 3, right: 3, width: 10, height: 10, background: "#10B981", borderRadius: "50%" }} />}
+                            </button>
+                        );
+                    })}
+                </div>
+                <button onClick={() => { localStorage.removeItem('bcm_icons'); setCustomIcons({}); }} style={{ width: "100%", background: T.bg, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "9px", fontSize: 12, color: T.sub, cursor: "pointer", marginTop: 10 }}>↺ Restaurar todos los iconos originales</button>
+            </CfgSection>
+
             <PBtn full onClick={guardarYCerrar} style={{ marginTop: 8 }}>{t(cfg, 'cfg_guardar')}</PBtn>
 
             {/* Botón Exportar JSX */}
@@ -3470,6 +3981,9 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
                 <button onClick={() => setShowLockConfirm(true)} style={{ width: "100%", background: "#EF4444", border: "none", borderRadius: T.rsm, padding: "11px", fontSize: 13, fontWeight: 700, color: "#fff", cursor: "pointer" }}>🔒 Publicar y bloquear ahora</button>
             </div>
         </Sheet>)}
+
+        {iconPickerFor && <IconPickerModal item={iconPickerFor} customIcons={customIcons} onSave={saveCustomIcons} onClose={() => setIconPickerFor(null)} />}
+
 
         {/* Modal confirmación de bloqueo */}
         {showLockConfirm && (
@@ -3489,7 +4003,7 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
         {showUnlockModal && (
             <Sheet title="🔓 Desbloquear configuración" onClose={() => { setShowUnlockModal(false); setUnlockUser(''); setUnlockPass(''); setUnlockErr(''); }}>
                 <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "12px 14px", marginBottom: 16, fontSize: 12, color: "#92400E", fontWeight: 600 }}>Ingresá las credenciales de administrador para desbloquear la configuración visual.</div>
-                <Field label="Usuario"><input value={unlockUser} onChange={e => { setUnlockUser(e.target.value); setUnlockErr(''); }} placeholder="admin" autoCapitalize="none" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: `1.5px solid ${unlockErr ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
+                <Field label="Usuario"><input value={unlockUser} onChange={e => { setUnlockUser(e.target.value); setUnlockErr(''); }} placeholder="Ingresá tu usuario" autoCapitalize="none" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: `1.5px solid ${unlockErr ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
                 <Field label="Contraseña"><input type="password" value={unlockPass} onChange={e => { setUnlockPass(e.target.value); setUnlockErr(''); }} placeholder="••••••••" onKeyDown={e => e.key === 'Enter' && tryUnlock()} style={{ width: "100%", background: T.bg, border: `1.5px solid ${unlockErr ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "11px 14px", fontSize: 14, color: T.text }} /></Field>
                 {unlockErr && <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#EF4444", marginBottom: 12, fontWeight: 600 }}>{unlockErr}</div>}
                 <PBtn full onClick={tryUnlock}>🔓 Desbloquear</PBtn>
@@ -3498,13 +4012,160 @@ function Mas({ setView, authed, setAuthed, requireAuth, cfg, setCfg, apiKey, set
     </div>);
 }
 
-function Archivos({ setView }) { const [files, setFiles] = useState([]); const inputRef = useRef(null); async function handleUp(e) { for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); setFiles(p => [...p, { id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" }]); } e.target.value = ""; } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Archivos" back onBack={() => setView("mas")} right={<><input type="file" ref={inputRef} multiple onChange={handleUp} style={{ display: "none" }} /><PlusBtn onClick={() => inputRef.current?.click()} /></>} /><div style={{ padding: "12px 18px" }}>{files.length === 0 ? <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Subí tu primer archivo</div> : files.map(f => (<div key={f.id} style={{ display: "flex", alignItems: "center", gap: 11, background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "11px 13px", marginBottom: 7 }}><div style={{ width: 38, height: 38, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><span style={{ fontSize: 9, fontWeight: 800, color: T.accent }}>{f.ext}</span></div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</div><div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div></div><a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a></div>))}</div></div>); }
+function Archivos({ setView }) { const [files, setFiles] = useState([]); const [loaded, setLoaded] = useState(false); const inputRef = useRef(null); useEffect(() => { (async () => { try { const r = await storage.get("bcm_archivos"); if (r?.value) setFiles(JSON.parse(r.value)); } catch {} setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set("bcm_archivos", JSON.stringify(files)).catch(() => {}); }, [files, loaded]); async function handleUp(e) { for (const f of Array.from(e.target.files)) { const url = await toDataUrl(f); setFiles(p => [...p, { id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" }]); } e.target.value = ""; } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Archivos" back onBack={() => setView("mas")} right={<><input type="file" ref={inputRef} multiple onChange={handleUp} style={{ display: "none" }} /><PlusBtn onClick={() => inputRef.current?.click()} /></>} /><div style={{ padding: "12px 18px" }}>{files.length === 0 ? <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Subí tu primer archivo</div> : files.map(f => (<div key={f.id} style={{ display: "flex", alignItems: "center", gap: 11, background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "11px 13px", marginBottom: 7 }}><div style={{ width: 38, height: 38, borderRadius: 9, background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><span style={{ fontSize: 9, fontWeight: 800, color: T.accent }}>{f.ext}</span></div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</div><div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div></div><a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a></div>))}</div></div>); }
 
 function Seguimiento({ alerts, setAlerts, setView }) { function dismiss(id) { setAlerts(p => p.filter(a => a.id !== id)); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Seguimiento" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}>{["alta", "media"].map(prio => alerts.filter(a => a.prioridad === prio).length > 0 && (<div key={prio} style={{ marginBottom: 16 }}><div style={{ fontSize: 11, fontWeight: 700, color: prio === "alta" ? "#EF4444" : "#F59E0B", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{prio === "alta" ? "Crítico" : "Atención"}</div>{alerts.filter(a => a.prioridad === prio).map(a => (<div key={a.id} style={{ background: prio === "alta" ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${prio === "alta" ? "#FECACA" : "#FDE68A"}`, borderRadius: 10, padding: "11px 13px", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}><div style={{ flex: 1, fontSize: 12, color: T.text, lineHeight: 1.4 }}>{a.msg}</div><button onClick={() => dismiss(a.id)} style={{ background: "none", border: "none", fontSize: 14, color: T.muted, cursor: "pointer" }}>✕</button></div>))}</div>))}{alerts.length === 0 && <div style={{ textAlign: "center", padding: "60px 0" }}><div style={{ fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 6 }}>✅ Todo en orden</div><div style={{ fontSize: 13, color: T.muted }}>Sin alertas</div></div>}</div></div>); }
 
-function ResumenView({ lics, obras, personal, alerts, setView }) { const kpis = [{ label: "Licitaciones", val: lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado)).length, color: "#3B82F6" }, { label: "Obras activas", val: obras.filter(o => o.estado === "curso").length, color: "#10B981" }, { label: "Personal", val: personal.length, color: "#8B5CF6" }, { label: "Alertas", val: alerts.filter(a => a.prioridad === "alta").length, color: "#EF4444" }]; return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Resumen Ejecutivo" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>{kpis.map(k => (<Card key={k.label} style={{ padding: "14px", textAlign: "center" }}><div style={{ fontSize: 28, fontWeight: 800, color: k.color }}>{k.val}</div><div style={{ fontSize: 10, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{k.label}</div></Card>))}</div>{obras.length > 0 && <Card style={{ padding: "14px 16px", marginBottom: 12 }}><Lbl>Avance de obras</Lbl>{obras.map(o => { const ec = OBRA_ESTADOS.find(e => e.id === o.estado) || OBRA_ESTADOS[0]; return (<div key={o.id} style={{ marginBottom: 10 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{o.nombre}</span><span style={{ fontSize: 13, fontWeight: 800, color: ec.color }}>{o.avance}%</span></div><div style={{ height: 8, background: T.bg, borderRadius: 4 }}><div style={{ height: 8, background: ec.color, borderRadius: 4, width: `${o.avance}%`, transition: "width .6s" }} /></div></div>); })}</Card>}</div></div>); }
+function parseMontoNum(m) { if (!m) return 0; return parseFloat(String(m).replace(/[^0-9.]/g,'')) || 0; }
+function ResumenView({ lics, obras, personal, alerts, setView }) {
+    const kpis = [{ label: "Licitaciones", val: lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado)).length, color: "#3B82F6" }, { label: "Obras activas", val: obras.filter(o => o.estado === "curso").length, color: "#10B981" }, { label: "Personal", val: personal.length, color: "#8B5CF6" }, { label: "Alertas", val: alerts.length, color: "#EF4444" }];
+    const obrasEnCurso = obras.filter(o => o.estado === "curso");
+    return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+        <AppHeader title="Resumen Ejecutivo" back onBack={() => setView("mas")} />
+        <div style={{ padding: "14px 18px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+                {kpis.map(k => (<Card key={k.label} style={{ padding: "14px", textAlign: "center" }}><div style={{ fontSize: 28, fontWeight: 800, color: k.color }}>{k.val}</div><div style={{ fontSize: 10, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{k.label}</div></Card>))}
+            </div>
+            {obrasEnCurso.length > 0 && <Card style={{ padding: "14px 16px", marginBottom: 12 }}>
+                <Lbl>Avance y presupuesto por obra</Lbl>
+                {obrasEnCurso.map(o => {
+                    const ec = OBRA_ESTADOS.find(e => e.id === o.estado) || OBRA_ESTADOS[0];
+                    const lic = lics.find(l => l.id === o.lic_id);
+                    const presupTotal = parseMontoNum(lic?.monto || o.monto);
+                    const pagado = parseMontoNum(o.pagado || 0);
+                    const pct = presupTotal > 0 ? Math.min(100, Math.round(pagado / presupTotal * 100)) : o.avance;
+                    return (<div key={o.id} style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${T.border}` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                            <span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{o.nombre}</span>
+                            <span style={{ fontSize: 13, fontWeight: 800, color: ec.color }}>{o.avance}%</span>
+                        </div>
+                        <div style={{ height: 7, background: T.bg, borderRadius: 4, marginBottom: 6 }}>
+                            <div style={{ height: 7, background: ec.color, borderRadius: 4, width: `${o.avance}%`, transition: "width .6s" }} />
+                        </div>
+                        {presupTotal > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                            <span style={{ color: T.muted }}>Presupuesto: <b style={{ color: T.text }}>${presupTotal.toLocaleString('es-AR')}</b></span>
+                            <span style={{ color: pct > 80 ? "#EF4444" : "#10B981", fontWeight: 700 }}>Consumido: {pct}%</span>
+                        </div>}
+                        {presupTotal > 0 && pagado > 0 && <div style={{ marginTop: 3, fontSize: 11, color: T.muted }}>Pagado: <b style={{ color: "#EF4444" }}>${pagado.toLocaleString('es-AR')}</b> · Saldo: <b style={{ color: "#10B981" }}>${(presupTotal - pagado).toLocaleString('es-AR')}</b></div>}
+                    </div>);
+                })}
+            </Card>}
+        </div>
+    </div>);
+}
 
-function MensajesView({ personal, setView }) { const [sel, setSel] = useState(null); const [threads, setThreads] = useState({}); const [msg, setMsg] = useState(''); const [loaded, setLoaded] = useState(false); const scrollRef = useRef(null); const taRef = useRef(null); useEffect(() => { (async () => { try { const r = await storage.get('bcm_msgs'); if (r?.value) setThreads(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) storage.set('bcm_msgs', JSON.stringify(threads)).catch(() => { }); }, [threads, loaded]); useEffect(() => { setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 80); }, [sel, threads]); function sendMsg() { if (!msg.trim() || !sel) return; const m = { id: uid(), txt: msg, autor: 'Yo', hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) }; setThreads(t => ({ ...t, [sel.id]: [...(t[sel.id] || []), m] })); setMsg(''); if (taRef.current) taRef.current.style.height = "22px"; } function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); } if (sel) { const thread = threads[sel.id] || []; return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}><AppHeader title={sel.nombre} sub={sel.rol} back onBack={() => setSel(null)} /><div style={{ flex: 1, overflowY: "auto", padding: "14px 18px 80px" }}>{thread.map(m => (<div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: m.autor === "Yo" ? "flex-end" : "flex-start" }}><div style={{ maxWidth: "82%", background: m.autor === "Yo" ? T.accent : T.card, border: m.autor === "Yo" ? "none" : `1px solid ${T.border}`, borderRadius: m.autor === "Yo" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 13px", color: m.autor === "Yo" ? "#fff" : T.text, fontSize: 13, lineHeight: 1.5, boxShadow: T.shadow, whiteSpace: "pre-wrap" }}>{m.txt}</div><div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{m.hora}</div></div>))}<div ref={scrollRef} /></div><div style={{ padding: "10px 16px calc(max(14px,env(safe-area-inset-bottom)) + 10px)", background: T.card, borderTop: `1px solid ${T.border}`, display: "flex", gap: 8, alignItems: "flex-end" }}><div style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 22, padding: "10px 14px" }}><textarea ref={taRef} rows={1} value={msg} onChange={e => { setMsg(e.target.value); const el = taRef.current; if (el) { el.style.height = "22px"; el.style.height = Math.min(el.scrollHeight, 80) + "px"; } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }} style={{ width: "100%", background: "transparent", border: "none", color: T.text, fontSize: 14, lineHeight: 1.5, height: 22 }} /></div><button onClick={sendMsg} disabled={!msg.trim()} style={{ width: 42, height: 42, borderRadius: "50%", background: msg.trim() ? T.accent : "#E2E8F0", color: msg.trim() ? "#fff" : "#94A3B8", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></button></div></div>); } return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}><AppHeader title="Mensajes internos" back onBack={() => setView("mas")} /><div style={{ padding: "14px 18px" }}>{personal.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Primero agregá personal</div>}{personal.map(p => { const thread = threads[p.id] || []; const last = thread[thread.length - 1]; return (<Card key={p.id} onClick={() => setSel(p)} style={{ padding: "13px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}><div style={{ width: 44, height: 44, borderRadius: "50%", background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: T.accent, flexShrink: 0 }}>{ini(p.nombre)}</div><div style={{ flex: 1 }}><div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{p.nombre}</div><div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{last ? last.txt.slice(0, 38) + "..." : p.rol + " · Sin mensajes"}</div></div>{thread.length > 0 && <Badge color={T.accent} bg={T.accentLight}>{thread.length}</Badge>}<span style={{ fontSize: 14, color: T.muted }}>›</span></Card>); })}</div></div>); }
+function MensajesView({ personal, setView, currentUser }) {
+    const [sel, setSel] = useState(null);
+    const [msgs, setMsgs] = useState([]);
+    const [msg, setMsg] = useState('');
+    const [loading, setLoading] = useState(false);
+    const scrollRef = useRef(null);
+    const taRef = useRef(null);
+    const miUser = currentUser?.user || currentUser?.nombre || 'admin';
+
+    // Cargar mensajes desde Supabase
+    async function loadMsgs() {
+        try {
+            const r = await fetch(`${SUPA_URL}/rest/v1/bcm_mensajes?or=(de.eq.${encodeURIComponent(miUser)},para.eq.${encodeURIComponent(miUser)})&order=created_at.asc`, { headers: SH() });
+            if (r.ok) { const d = await r.json(); setMsgs(d || []); }
+        } catch {}
+    }
+
+    // Marcar como leídos
+    async function marcarLeidos(deUser) {
+        try {
+            await fetch(`${SUPA_URL}/rest/v1/bcm_mensajes?para=eq.${encodeURIComponent(miUser)}&de=eq.${encodeURIComponent(deUser)}&leido=eq.false`, {
+                method: 'PATCH', headers: { ...SH(), 'Prefer': 'return=minimal' },
+                body: JSON.stringify({ leido: true })
+            });
+        } catch {}
+    }
+
+    useEffect(() => { loadMsgs(); const interval = setInterval(loadMsgs, 5000); return () => clearInterval(interval); }, []);
+    useEffect(() => { setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 80); }, [sel, msgs]);
+
+    async function sendMsg() {
+        if (!msg.trim() || !sel || loading) return;
+        setLoading(true);
+        const texto = msg.trim();
+        setMsg('');
+        if (taRef.current) taRef.current.style.height = "22px";
+        try {
+            await fetch(`${SUPA_URL}/rest/v1/bcm_mensajes`, {
+                method: 'POST', headers: { ...SH(), 'Prefer': 'return=minimal' },
+                body: JSON.stringify({ de: miUser, para: sel.appUser || sel.nombre, texto })
+            });
+            await loadMsgs();
+        } catch {}
+        setLoading(false);
+    }
+
+    function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); }
+
+    // Mensajes no leídos por persona
+    function unreadFrom(p) {
+        const paraId = p.appUser || p.nombre;
+        return msgs.filter(m => m.de === paraId && m.para === miUser && !m.leido).length;
+    }
+
+    if (sel) {
+        const selId = sel.appUser || sel.nombre;
+        const thread = msgs.filter(m => (m.de === miUser && m.para === selId) || (m.de === selId && m.para === miUser));
+        marcarLeidos(selId);
+        return (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: T.bg, zIndex: 5 }}>
+                <AppHeader title={sel.nombre} sub={sel.rol} back onBack={() => { setSel(null); loadMsgs(); }} />
+                <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", paddingBottom: 80 }}>
+                    {thread.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Sin mensajes aún. ¡Escribí el primero!</div>}
+                    {thread.map(m => {
+                        const esMio = m.de === miUser;
+                        return (<div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: esMio ? "flex-end" : "flex-start" }}>
+                            <div style={{ maxWidth: "82%", background: esMio ? T.accent : T.card, border: esMio ? "none" : `1px solid ${T.border}`, borderRadius: esMio ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 13px", color: esMio ? "#fff" : T.text, fontSize: 13, lineHeight: 1.5, boxShadow: T.shadow, whiteSpace: "pre-wrap" }}>{m.texto}</div>
+                            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{new Date(m.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}{!esMio && m.leido ? ' ✓✓' : ''}</div>
+                        </div>);
+                    })}
+                    <div ref={scrollRef} />
+                </div>
+                <div style={{ position: "fixed", bottom: 58, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, padding: "10px 16px 10px", background: T.card, borderTop: `1px solid ${T.border}`, display: "flex", gap: 8, alignItems: "flex-end", zIndex: 20, boxSizing: "border-box" }}>
+                    <div style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 22, padding: "10px 14px" }}>
+                        <textarea ref={taRef} rows={1} value={msg} onChange={e => { setMsg(e.target.value); const el = taRef.current; if (el) { el.style.height = "22px"; el.style.height = Math.min(el.scrollHeight, 80) + "px"; } }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } }} placeholder="Escribí un mensaje..." style={{ width: "100%", background: "transparent", border: "none", color: T.text, fontSize: 14, lineHeight: 1.5, height: 22 }} />
+                    </div>
+                    <button onClick={sendMsg} disabled={!msg.trim() || loading} style={{ width: 42, height: 42, borderRadius: "50%", background: msg.trim() ? T.accent : "#E2E8F0", color: msg.trim() ? "#fff" : "#94A3B8", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+                        {loading ? <div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,.4)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin .8s linear infinite" }} /> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+            <AppHeader title="Mensajes internos" back onBack={() => setView("mas")} right={<button onClick={loadMsgs} style={{ background: T.bg, border: "none", borderRadius: 8, width: 32, height: 32, fontSize: 16, cursor: "pointer" }}>↻</button>} />
+            <div style={{ padding: "14px 18px" }}>
+                {personal.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: T.muted, fontSize: 13 }}>Primero agregá personal en la sección Personal</div>}
+                {personal.map(p => {
+                    const unread = unreadFrom(p);
+                    const selId = p.appUser || p.nombre;
+                    const lastMsg = [...msgs].reverse().find(m => (m.de === miUser && m.para === selId) || (m.de === selId && m.para === miUser));
+                    return (
+                        <Card key={p.id} onClick={() => setSel(p)} style={{ padding: "13px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, background: unread > 0 ? T.accentLight : T.card }}>
+                            <div style={{ position: "relative" }}>
+                                <div style={{ width: 44, height: 44, borderRadius: "50%", background: T.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: T.accent, flexShrink: 0 }}>{ini(p.nombre)}</div>
+                                {unread > 0 && <div style={{ position: "absolute", top: -2, right: -2, width: 18, height: 18, background: "#EF4444", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "#fff" }}>{unread}</div>}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 13, fontWeight: unread > 0 ? 800 : 700, color: T.text }}>{p.nombre}</div>
+                                <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{lastMsg ? lastMsg.texto.slice(0, 38) + (lastMsg.texto.length > 38 ? "..." : "") : p.rol + " · Sin mensajes"}</div>
+                            </div>
+                            {unread > 0 && <Badge color="#EF4444" bg="#FEF2F2">{unread} nuevo{unread > 1 ? 's' : ''}</Badge>}
+                            <span style={{ fontSize: 14, color: T.muted }}>›</span>
+                        </Card>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
 
 function ContactosView({ setView, onContactosChange }) { const [contacts, setContacts] = useState([]); const [showNew, setShowNew] = useState(false); const [form, setForm] = useState({ nombre: '', email: '', telefono: '', empresa: '', rol: '' }); const [loaded, setLoaded] = useState(false); useEffect(() => { (async () => { try { const r = await storage.get('bcm_contactos'); if (r?.value) setContacts(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []); useEffect(() => { if (loaded) { storage.set('bcm_contactos', JSON.stringify(contacts)).catch(() => { }); if (onContactosChange) onContactosChange(contacts); } }, [contacts, loaded]); function add() { if (!form.nombre || !form.email) return; setContacts(p => [...p, { ...form, id: uid() }]); setForm({ nombre: '', email: '', telefono: '', empresa: '', rol: '' }); setShowNew(false); } function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); } const COLS = ["#1D4ED8", "#7C3AED", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]; return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}><AppHeader title="Contactos" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} /><div style={{ flex: 1, overflowY: "auto", padding: "12px 18px", paddingBottom: 80 }}>{contacts.length === 0 && <div style={{ textAlign: "center", padding: "48px 0" }}><div style={{ fontSize: 40, marginBottom: 12 }}>📧</div><div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>Sin contactos</div></div>}{contacts.map((c, i) => { const col = COLS[i % COLS.length]; return (<Card key={c.id} style={{ padding: "12px 14px", marginBottom: 8 }}><div style={{ display: "flex", alignItems: "center", gap: 12 }}><div style={{ width: 42, height: 42, borderRadius: "50%", background: col + "18", border: `1.5px solid ${col}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: col, flexShrink: 0 }}>{ini(c.nombre)}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{c.nombre}</div>{(c.empresa || c.rol) && <div style={{ fontSize: 11, color: T.muted }}>{c.empresa}{c.rol ? ` · ${c.rol}` : ""}</div>}<div style={{ fontSize: 11, color: T.accent, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.email}</div></div><div style={{ display: "flex", gap: 5, flexShrink: 0 }}><a href={`mailto:${c.email}`} style={{ textDecoration: "none" }}><button style={{ background: T.accentLight, border: `1px solid ${T.border}`, borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✉️</button></a>{c.telefono && <a href={`https://wa.me/${c.telefono}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#DCF8C6", border: "1px solid #86EFAC", borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>💬</button></a>}<button onClick={() => setContacts(p => p.filter(x => x.id !== c.id))} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, width: 30, height: 30, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button></div></div></Card>); })}</div>{showNew && <Sheet title="Nuevo contacto" onClose={() => setShowNew(false)}><Field label="Nombre *"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Carlos Méndez" /></Field><Field label="Email *"><TInput value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} placeholder="cmendez@aa2000.com.ar" /></Field><FieldRow><Field label="Empresa"><TInput value={form.empresa} onChange={e => setForm(p => ({ ...p, empresa: e.target.value }))} placeholder="AA2000" /></Field><Field label="Rol"><TInput value={form.rol} onChange={e => setForm(p => ({ ...p, rol: e.target.value }))} placeholder="Inspector" /></Field></FieldRow><Field label="WhatsApp"><TInput value={form.telefono} onChange={e => setForm(p => ({ ...p, telefono: e.target.value.replace(/\D/g, '') }))} placeholder="5491155556666" /></Field><PBtn full onClick={add} disabled={!form.nombre || !form.email}>Guardar</PBtn></Sheet>}</div>); }
 
@@ -3639,6 +4300,16 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
         const empresa = cfg?.empresa || 'BelfastCM'; const emailIA = cfg?.email || EMAIL_IA;
         let c = `Sos el Asistente IA de ${empresa}. Email: ${emailIA}${cfg?.cargo ? `\nCargo: ${cfg.cargo}` : ''}${cfg?.telefono ? `\nTel: ${cfg.telefono}` : ''}${cfg?.ciudad ? `\nSede: ${cfg.ciudad}` : ''}\n\n`;
         if (userName) c += `El usuario se llama ${userName}. Usá su nombre naturalmente en las respuestas para personalizar la experiencia.\n\n`;
+        // Include pending tasks info
+        const tareasP = personal.filter(p => (p.tareas||[]).some(t => !t.done));
+        if (tareasP.length > 0) {
+            c += `TAREAS PENDIENTES DEL EQUIPO:\n`;
+            tareasP.forEach(p => {
+                const pendientes = (p.tareas||[]).filter(t => !t.done);
+                c += `- ${p.nombre} (${p.rol}): ${pendientes.map(t => t.txt).join(', ')}\n`;
+            });
+            c += `\nSi el usuario pregunta por el estado de tareas, podés informarle sobre estos pendientes y sugerir que los reclame.\n\n`;
+        }
         c += `Especialista en obras en AA2000. Respondés en español rioplatense, profesional y preciso. Analizás pliegos, cotizás obras (UOCRA 2025), validás documentación y analizás fotos. Para mails agregás al final:\n---\n📧 PREPARADO PARA ENVÍO\nDe: ${emailIA}\nPara: [email]\nAsunto: [asunto]\n---\n\n`;
         c += `📋 LICITACIONES (${lics?.length || 0})\n`; lics?.forEach(l => { c += `• ${l.nombre} | ${AIRPORTS.find(a => a.id === l.ap)?.code} | ${LIC_ESTADOS.find(e => e.id === l.estado)?.label} | ${l.monto || '—'} | ${l.fecha || '—'}${l.sector ? ` | ${l.sector}` : ''}\n`; });
         c += `\n🏗 OBRAS (${obras?.length || 0})\n`; obras?.forEach(o => { c += `• ${o.nombre} | ${AIRPORTS.find(a => a.id === o.ap)?.code} | ${OBRA_ESTADOS.find(e => e.id === o.estado)?.label} | ${o.avance}% | ${o.sector || '—'} | ${o.inicio || '—'}→${o.cierre || '—'}\n`; if (o.obs?.length) o.obs.forEach(n => c += `  [${n.fecha}] ${n.txt}\n`); if (o.fotos?.length) c += `  Fotos: ${o.fotos.length}\n`; });
@@ -3819,10 +4490,464 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
     </div>);
 }
 
-const DEMO_LICS = [{ id: "l1", nombre: "Refacción Terminal A", ap: "aep", estado: "curso", monto: "$4.200.000", fecha: "10/03/25", sector: "Terminal A", docs: {} }, { id: "l2", nombre: "Ampliación Sala VIP", ap: "aep", estado: "presupuesto", monto: "$8.500.000", fecha: "02/04/25", sector: "Sala VIP", docs: {} }, { id: "l3", nombre: "Señalética Pista Norte", ap: "eze", estado: "visitar", monto: "—", fecha: "15/04/25", sector: "Pista Norte", docs: {} }, { id: "l4", nombre: "Hangar Técnico", ap: "eze", estado: "adjudicada", monto: "$12.100.000", fecha: "20/02/25", sector: "Hangar", docs: {} }, { id: "l5", nombre: "Baños Internacionales", ap: "eze", estado: "curso", monto: "$1.800.000", fecha: "28/03/25", sector: "Terminal B", docs: {} }];
-const DEMO_OBRAS = [{ id: "o1", nombre: "Refacción Terminal A", ap: "aep", estado: "curso", avance: 65, inicio: "10/03/25", cierre: "30/06/25", sector: "Terminal A", obs: [], fotos: [], archivos: [], informes: [], docs: {} }, { id: "o2", nombre: "Baños Internacionales", ap: "eze", estado: "curso", avance: 30, inicio: "28/03/25", cierre: "31/07/25", sector: "Terminal B", obs: [], fotos: [], archivos: [], informes: [], docs: {} }, { id: "o3", nombre: "Hangar Técnico", ap: "eze", estado: "terminada", avance: 100, inicio: "20/02/25", cierre: "15/04/25", sector: "Hangar", obs: [], fotos: [], archivos: [], informes: [], docs: {} }];
-const DEMO_PERSONAL = [{ id: "p1", nombre: "M. Rodríguez", rol: "Jefe de Obra", empresa: "BelfastCM", docs: {}, telefono: "5491154321234", foto: "" }, { id: "p2", nombre: "P. Gómez", rol: "Capataz", empresa: "BelfastCM", docs: {}, telefono: "5491187654321", foto: "" }];
-const DEMO_ALERTS = [{ id: "a1", prioridad: "alta", msg: "ART de M. Rodríguez vence en 2 días" }, { id: "a2", prioridad: "media", msg: "Obra 'Baños Internacionales' sin actividad hace 5 días" }, { id: "a3", prioridad: "alta", msg: "Pliego EZE vence en 3 días" }];
+const DEMO_LICS = [];
+const DEMO_OBRAS = [];
+const DEMO_PERSONAL = [];
+const DEMO_ALERTS = [];
+
+function InfoUtilView({ setView }) {
+    const [dolar, setDolar] = useState(null);
+    const [clima, setClima] = useState(null);
+    const [loadingD, setLoadingD] = useState(false);
+    const [loadingC, setLoadingC] = useState(false);
+    const [lat, setLat] = useState(null);
+    const [lon, setLon] = useState(null);
+
+    useEffect(() => {
+        // Get location
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(p => { setLat(p.coords.latitude); setLon(p.coords.longitude); }, () => { setLat(-34.6037); setLon(-58.3816); });
+        } else { setLat(-34.6037); setLon(-58.3816); }
+    }, []);
+
+    useEffect(() => {
+        // Fetch dólar
+        setLoadingD(true);
+        fetch('https://dolarapi.com/v1/dolares')
+            .then(r => r.json())
+            .then(d => { setDolar(d); setLoadingD(false); })
+            .catch(() => setLoadingD(false));
+    }, []);
+
+    useEffect(() => {
+        if (!lat || !lon) return;
+        setLoadingC(true);
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weathercode,windspeed_10m&daily=precipitation_sum,weathercode&timezone=auto&forecast_days=7`)
+            .then(r => r.json())
+            .then(d => { setClima(d); setLoadingC(false); })
+            .catch(() => setLoadingC(false));
+    }, [lat, lon]);
+
+    const WX = {0:'☀️',1:'🌤',2:'⛅',3:'☁️',45:'🌫',48:'🌫',51:'🌦',53:'🌦',55:'🌧',61:'🌧',63:'🌧',65:'🌧',71:'🌨',73:'🌨',75:'🌨',80:'🌦',81:'🌧',82:'⛈',95:'⛈',96:'⛈',99:'⛈'};
+    const wxIcon = code => WX[code] || '🌡';
+    const wxLabel = code => { if(code===0) return 'Despejado'; if(code<=2) return 'Parcial'; if(code<=3) return 'Nublado'; if(code<=48) return 'Niebla'; if(code<=55) return 'Llovizna'; if(code<=65) return 'Lluvia'; if(code<=75) return 'Nieve'; if(code<=82) return 'Lluvias'; return 'Tormenta'; };
+    const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+
+    const dolarTypes = dolar ? [
+        dolar.find(d => d.casa === 'oficial'),
+        dolar.find(d => d.casa === 'blue'),
+        dolar.find(d => d.casa === 'bolsa'),
+        dolar.find(d => d.casa === 'contadoconliqui'),
+    ].filter(Boolean) : [];
+
+    const dolarLabels = { oficial: 'Oficial', blue: 'Blue', bolsa: 'MEP', contadoconliqui: 'CCL' };
+
+    return (
+        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 80 }}>
+            <AppHeader title="Info útil" back onBack={() => setView('mas')} />
+            <div style={{ padding: '14px 18px' }}>
+                {/* DÓLAR */}
+                <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>💵 Cotización del dólar</div>
+                    {loadingD ? <div style={{ textAlign: 'center', padding: 20, color: T.muted }}>Cargando...</div> :
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        {dolarTypes.map(d => (
+                            <Card key={d.casa} style={{ padding: '12px 14px' }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: T.muted, textTransform: 'uppercase' }}>{dolarLabels[d.casa] || d.nombre}</div>
+                                <div style={{ fontSize: 20, fontWeight: 800, color: T.accent, marginTop: 4 }}>${d.venta?.toLocaleString('es-AR')}</div>
+                                <div style={{ fontSize: 10, color: T.muted }}>Compra: ${d.compra?.toLocaleString('es-AR')}</div>
+                            </Card>
+                        ))}
+                        {!dolar && !loadingD && <div style={{ gridColumn: '1/-1', color: T.muted, fontSize: 12, textAlign: 'center', padding: 12 }}>Sin datos disponibles</div>}
+                    </div>}
+                </div>
+
+                {/* CLIMA */}
+                <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>🌤 Clima y pronóstico</div>
+                    {loadingC ? <div style={{ textAlign: 'center', padding: 20, color: T.muted }}>Cargando...</div> :
+                    clima ? <>
+                        <Card style={{ padding: '14px 16px', marginBottom: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <div style={{ fontSize: 48 }}>{wxIcon(clima.current?.weathercode)}</div>
+                                <div>
+                                    <div style={{ fontSize: 32, fontWeight: 800, color: T.text }}>{Math.round(clima.current?.temperature_2m)}°C</div>
+                                    <div style={{ fontSize: 13, color: T.muted }}>{wxLabel(clima.current?.weathercode)} · Viento {Math.round(clima.current?.windspeed_10m)} km/h</div>
+                                    {clima.current?.precipitation > 0 && <div style={{ fontSize: 12, color: '#3B82F6', fontWeight: 600, marginTop: 2 }}>💧 Precipitación: {clima.current.precipitation} mm</div>}
+                                </div>
+                            </div>
+                        </Card>
+                        <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+                            {(clima.daily?.time || []).slice(0, 7).map((fecha, i) => {
+                                const d = new Date(fecha + 'T12:00:00');
+                                const lluvia = clima.daily?.precipitation_sum?.[i] || 0;
+                                return (
+                                    <div key={fecha} style={{ minWidth: 54, background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: '8px 6px', textAlign: 'center', flexShrink: 0, borderTop: `3px solid ${lluvia > 3 ? '#3B82F6' : lluvia > 0 ? '#93C5FD' : '#10B981'}` }}>
+                                        <div style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}>{DIAS[d.getDay()]}</div>
+                                        <div style={{ fontSize: 22, margin: '4px 0' }}>{wxIcon(clima.daily?.weathercode?.[i])}</div>
+                                        {lluvia > 0 && <div style={{ fontSize: 10, color: '#3B82F6', fontWeight: 700 }}>{lluvia.toFixed(0)}mm</div>}
+                                        {lluvia === 0 && <div style={{ fontSize: 9, color: '#10B981', fontWeight: 600 }}>Sin lluvia</div>}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </> : <div style={{ color: T.muted, fontSize: 12, textAlign: 'center', padding: 12 }}>Sin datos de clima</div>}
+                </div>
+
+                {/* MAPAS */}
+                <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>🗺 Mapas y navegación</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        {[
+                            { img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Google_Maps_Logo_2020.svg/512px-Google_Maps_Logo_2020.svg.png', label: 'Google Maps', url: `https://www.google.com/maps/@${lat||'-34.6037'},${lon||'-58.3816'},15z`, color: '#4285F4' },
+                            { img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Google_Maps_Logo_2020.svg/512px-Google_Maps_Logo_2020.svg.png', label: 'Tráfico', url: `https://www.google.com/maps/@${lat||'-34.6037'},${lon||'-58.3816'},15z/data=!5m1!1e1`, color: '#EA4335', badge: '🚦' },
+                            { img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/13/Google_Earth_Logo.png/240px-Google_Earth_Logo.png', label: 'Google Earth', url: `https://earth.google.com/web/@${lat||'-34.6037'},${lon||'-58.3816'},500a,1000d,35y,0h,0t,0r`, color: '#34A853' },
+                            { img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Waze_2022.svg/240px-Waze_2022.svg.png', label: 'Waze', url: 'https://waze.com/ul', color: '#33CCFF' },
+                        ].map(m => (
+                            <a key={m.label} href={m.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                                <Card style={{ padding: '12px', textAlign: 'center', cursor: 'pointer' }}>
+                                    <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 6, position: 'relative' }}>
+                                        <img src={m.img} alt={m.label} style={{ height: 40, objectFit: 'contain' }} onError={e => e.target.style.display='none'} />
+                                        {m.badge && <span style={{ position: 'absolute', top: -4, right: -4, fontSize: 16 }}>{m.badge}</span>}
+                                    </div>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: m.color }}>{m.label}</div>
+                                </Card>
+                            </a>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
+function GanttView({ obras, setView }) {
+    const [climaData, setClimaData] = useState(null);
+    const [sel, setSel] = useState(obras.find(o => o.estado === 'curso')?.id || '');
+
+    useEffect(() => {
+        navigator.geolocation?.getCurrentPosition(
+            p => {
+                fetch(`https://api.open-meteo.com/v1/forecast?latitude=${p.coords.latitude}&longitude=${p.coords.longitude}&daily=precipitation_sum,weathercode&timezone=auto&forecast_days=14`)
+                    .then(r => r.json()).then(setClimaData).catch(() => {});
+            },
+            () => {
+                fetch(`https://api.open-meteo.com/v1/forecast?latitude=-34.6037&longitude=-58.3816&daily=precipitation_sum,weathercode&timezone=auto&forecast_days=14`)
+                    .then(r => r.json()).then(setClimaData).catch(() => {});
+            }
+        );
+    }, []);
+
+    const obra = obras.find(o => o.id === sel);
+    const hoy = new Date();
+    const dias = Array.from({ length: 14 }, (_, i) => { const d = new Date(hoy); d.setDate(hoy.getDate() + i); return d; });
+    const DIAS = ['D','L','M','X','J','V','S'];
+
+    function getRain(i) {
+        if (!climaData?.daily?.precipitation_sum) return 0;
+        return climaData.daily.precipitation_sum[i] || 0;
+    }
+    function getWxCode(i) { return climaData?.daily?.weathercode?.[i] || 0; }
+    const isRainy = code => code >= 51;
+
+    return (
+        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 80 }}>
+            <AppHeader title="Diagrama de Gantt" back onBack={() => setView('mas')} />
+            <div style={{ padding: '14px 18px' }}>
+                {obras.filter(o => o.estado === 'curso').length > 0 &&
+                    <div style={{ marginBottom: 12 }}>
+                        <Lbl>Obra</Lbl>
+                        <Sel value={sel} onChange={e => setSel(e.target.value)}>
+                            {obras.filter(o => o.estado === 'curso').map(o => <option key={o.id} value={o.id}>{o.nombre}</option>)}
+                        </Sel>
+                    </div>
+                }
+
+                {/* Pronóstico 14 días */}
+                <Card style={{ padding: '14px', marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, marginBottom: 10 }}>🌤 Próximos 14 días — impacto en obra</div>
+                    <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 6 }}>
+                        {dias.map((d, i) => {
+                            const lluvia = getRain(i);
+                            const rain = isRainy(getWxCode(i));
+                            const bg = lluvia > 5 ? '#DBEAFE' : lluvia > 0 ? '#EFF6FF' : '#F0FDF4';
+                            const border = lluvia > 5 ? '#3B82F6' : lluvia > 0 ? '#93C5FD' : '#86EFAC';
+                            return (
+                                <div key={i} style={{ minWidth: 38, background: bg, border: `1.5px solid ${border}`, borderRadius: 8, padding: '6px 4px', textAlign: 'center', flexShrink: 0 }}>
+                                    <div style={{ fontSize: 9, color: T.muted, fontWeight: 600 }}>{DIAS[d.getDay()]}</div>
+                                    <div style={{ fontSize: 9, color: T.muted }}>{d.getDate()}/{d.getMonth()+1}</div>
+                                    <div style={{ fontSize: 18, margin: '3px 0' }}>{rain ? '🌧' : '☀️'}</div>
+                                    {lluvia > 0 ? <div style={{ fontSize: 9, color: '#3B82F6', fontWeight: 700 }}>{lluvia.toFixed(0)}mm</div>
+                                        : <div style={{ fontSize: 9, color: '#10B981', fontWeight: 600 }}>OK</div>}
+                                    {lluvia > 3 && <div style={{ fontSize: 8, color: '#EF4444', fontWeight: 700, marginTop: 2 }}>⚠ LLUVIA</div>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 11, color: T.muted, display: 'flex', gap: 12 }}>
+                        <span>🌧 Días con lluvia: <b style={{ color: '#3B82F6' }}>{dias.filter((_, i) => isRainy(getWxCode(i))).length}</b></span>
+                        <span>☀️ Días hábiles: <b style={{ color: '#10B981' }}>{dias.filter((_, i) => !isRainy(getWxCode(i)) && [1,2,3,4,5].includes(dias[i].getDay())).length}</b></span>
+                    </div>
+                </Card>
+
+                {/* Tareas de la obra */}
+                {obra && (
+                    <Card style={{ padding: '14px' }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, marginBottom: 10 }}>📋 {obra.nombre} — Avance {obra.avance}%</div>
+                        <div style={{ height: 8, background: T.bg, borderRadius: 4, marginBottom: 12 }}>
+                            <div style={{ height: 8, background: T.accent, borderRadius: 4, width: `${obra.avance}%` }} />
+                        </div>
+                        {obra.obs?.slice(-5).map(o => (
+                            <div key={o.id} style={{ display: 'flex', gap: 8, marginBottom: 6, fontSize: 12 }}>
+                                <span style={{ color: T.muted, flexShrink: 0 }}>{o.fecha}</span>
+                                <span style={{ color: T.text }}>{o.txt}</span>
+                            </div>
+                        ))}
+                        {(!obra.obs || obra.obs.length === 0) && <div style={{ color: T.muted, fontSize: 12 }}>Sin notas de avance</div>}
+                    </Card>
+                )}
+            </div>
+        </div>
+    );
+}
+
+
+function InfoExternaView({ setView }) {
+    const [dolar, setDolar] = useState(null);
+    const [clima, setClima] = useState(null);
+    const [loadingD, setLoadingD] = useState(true);
+    const [loadingC, setLoadingC] = useState(false);
+    const [ciudad, setCiudad] = useState('Buenos Aires');
+    const [ciudadInput, setCiudadInput] = useState('Buenos Aires');
+
+    useEffect(() => {
+        fetch('https://dolarapi.com/v1/dolares')
+            .then(r => r.json())
+            .then(data => { setDolar(data); setLoadingD(false); })
+            .catch(() => { setDolar(null); setLoadingD(false); });
+    }, []);
+
+    function buscarClima() {
+        setLoadingC(true);
+        setCiudad(ciudadInput);
+        fetch(`https://wttr.in/${encodeURIComponent(ciudadInput)}?format=j1`)
+            .then(r => r.json())
+            .then(data => { setClima(data); setLoadingC(false); })
+            .catch(() => { setClima(null); setLoadingC(false); });
+    }
+
+    useEffect(() => { buscarClima(); }, []);
+
+    const cur = clima?.current_condition?.[0];
+    const w3 = clima?.weather?.slice(0, 3) || [];
+
+    const TIPOS_DOLAR = { oficial: '🏦 Oficial', blue: '💵 Blue', bolsa: '📊 Bolsa (MEP)', contadoconliqui: '🔄 CCL', mayorista: '🏢 Mayorista', cripto: '₿ Cripto', tarjeta: '💳 Tarjeta' };
+
+    return (
+        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 80 }}>
+            <AppHeader title="Info externa" back onBack={() => setView('mas')} />
+            <div style={{ padding: '14px 18px' }}>
+
+                {/* DÓLAR */}
+                <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>💵 Cotización del dólar</div>
+                {loadingD && <div style={{ textAlign: 'center', padding: '20px', color: T.muted }}>Cargando...</div>}
+                {dolar && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 20 }}>
+                    {dolar.filter(d => ['oficial','blue','bolsa','contadoconliqui','mayorista','tarjeta'].includes(d.casa)).map(d => (
+                        <Card key={d.casa} style={{ padding: '12px 14px' }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 4 }}>{TIPOS_DOLAR[d.casa] || d.nombre}</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <div><div style={{ fontSize: 9, color: T.muted }}>Compra</div><div style={{ fontSize: 14, fontWeight: 800, color: '#10B981' }}>${d.compra?.toLocaleString('es-AR')}</div></div>
+                                <div style={{ textAlign: 'right' }}><div style={{ fontSize: 9, color: T.muted }}>Venta</div><div style={{ fontSize: 14, fontWeight: 800, color: '#EF4444' }}>${d.venta?.toLocaleString('es-AR')}</div></div>
+                            </div>
+                        </Card>
+                    ))}
+                </div>}
+                {!loadingD && !dolar && <Card style={{ padding: '14px', marginBottom: 20, textAlign: 'center', color: T.muted, fontSize: 13 }}>Sin conexión a cotizaciones</Card>}
+
+                {/* CLIMA */}
+                <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>🌤 Clima</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                    <input value={ciudadInput} onChange={e => setCiudadInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && buscarClima()} placeholder="Ciudad o dirección de obra..." style={{ flex: 1, padding: '10px 12px', border: `1.5px solid ${T.border}`, borderRadius: T.rsm, fontSize: 13, color: T.text, background: T.bg }} />
+                    <button onClick={buscarClima} style={{ background: T.accent, color: '#fff', border: 'none', borderRadius: T.rsm, padding: '10px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Buscar</button>
+                </div>
+                {loadingC && <div style={{ textAlign: 'center', padding: '20px', color: T.muted }}>Cargando clima...</div>}
+                {cur && <Card style={{ padding: '16px', marginBottom: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 8 }}>{ciudad}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12 }}>
+                        <div style={{ fontSize: 48, fontWeight: 800, color: T.accent }}>{cur.temp_C}°</div>
+                        <div>
+                            <div style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{cur.weatherDesc?.[0]?.value}</div>
+                            <div style={{ fontSize: 11, color: T.muted }}>Humedad: {cur.humidity}%</div>
+                            <div style={{ fontSize: 11, color: T.muted }}>Viento: {cur.windspeedKmph} km/h</div>
+                        </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                        {w3.map((d, i) => (
+                            <div key={i} style={{ background: T.bg, borderRadius: 8, padding: '8px', textAlign: 'center' }}>
+                                <div style={{ fontSize: 10, color: T.muted, marginBottom: 2 }}>{i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : 'Pasado'}</div>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{d.maxtempC}° / {d.mintempC}°</div>
+                                <div style={{ fontSize: 10, color: d.hourly?.[4]?.chanceofrain > 50 ? '#3B82F6' : T.muted }}>
+                                    {d.hourly?.[4]?.chanceofrain > 0 ? `🌧 ${d.hourly?.[4]?.chanceofrain}%` : '☀️'}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </Card>}
+
+                {/* MAPS */}
+                <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>🗺 Mapas y tráfico</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
+                    {[
+                        { label: 'Google Maps', color: '#4285F4', url: `https://maps.google.com/maps?q=${encodeURIComponent(ciudadInput)}`, img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Google_Maps_Logo_2020.svg/512px-Google_Maps_Logo_2020.svg.png' },
+                        { label: 'Tráfico', color: '#EA4335', url: `https://maps.google.com/maps?q=${encodeURIComponent(ciudadInput)}&layer=traffic`, img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Google_Maps_Logo_2020.svg/512px-Google_Maps_Logo_2020.svg.png', badge: '🚦' },
+                        { label: 'Google Earth', color: '#34A853', url: `https://earth.google.com/web/search/${encodeURIComponent(ciudadInput)}`, img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/13/Google_Earth_Logo.png/240px-Google_Earth_Logo.png' },
+                        { label: 'Waze', color: '#33CCFF', url: `https://waze.com/ul?q=${encodeURIComponent(ciudadInput)}`, img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Waze_2022.svg/240px-Waze_2022.svg.png' },
+                    ].map(item => (
+                        <a key={item.label} href={item.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                            <Card style={{ padding: '12px', textAlign: 'center', cursor: 'pointer' }}>
+                                <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 6, position: 'relative' }}>
+                                    <img src={item.img} alt={item.label} style={{ height: 40, objectFit: 'contain' }} onError={e => e.target.style.display='none'} />
+                                    {item.badge && <span style={{ position: 'absolute', top: -4, right: -4, fontSize: 16 }}>{item.badge}</span>}
+                                </div>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: item.color }}>{item.label}</div>
+                            </Card>
+                        </a>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+
+function LoginScreen({ onLogin, loginLogo }) {
+    const [user, setUser] = useState('');
+    const [pass, setPass] = useState('');
+    const [showPass, setShowPass] = useState(false);
+    const [err, setErr] = useState('');
+    const [loading, setLoading] = useState(false);
+    function tryLogin() {
+        setLoading(true);
+        setTimeout(() => {
+            const c = USERS.find(u => u.user === user.trim().toLowerCase() && u.pass === pass);
+            if (c) { onLogin(c); return; }
+            // Check personal staff users
+            const staff = (window.__bcm_personal__ || []).find(p => p.appUser && p.appUser === user.trim().toLowerCase() && p.appPass === pass);
+            if (staff) { onLogin({ user: staff.appUser, pass: staff.appPass, rol: staff.rol, nombre: staff.nombre, nivel: staff.nivel || 'empleado' }); return; }
+            setErr('Usuario o contraseña incorrectos'); setLoading(false);
+        }, 400);
+    }
+    return (
+        <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#F1F5F9', padding: '0 32px', fontFamily: "var(--font,'Plus Jakarta Sans'),sans-serif" }}>
+            <div style={{ width: '100%', maxWidth: 360 }}>
+                <div style={{ textAlign: 'center', marginBottom: 32 }}>
+                    {loginLogo
+                        ? <img src={loginLogo} alt="Logo" style={{ height: 80, objectFit: 'contain', marginBottom: 12, display: 'block', margin: '0 auto 12px' }} />
+                        : <div style={{ width: 64, height: 64, borderRadius: 18, background: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: 28 }}>🏗</div>
+                    }
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#0F172A' }}>BelfastCM</div>
+                    <div style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>Construction Management</div>
+                </div>
+                <div style={{ background: '#fff', borderRadius: 16, padding: '24px 20px', boxShadow: '0 4px 24px rgba(0,0,0,.08)' }}>
+                    <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>Usuario</div>
+                        <input value={user} onChange={e => { setUser(e.target.value); setErr(''); }} onKeyDown={e => e.key === 'Enter' && tryLogin()} placeholder="Ingresá tu usuario" style={{ width: '100%', padding: '12px 14px', border: '1.5px solid #E2E8F0', borderRadius: 10, fontSize: 15, color: '#0F172A', background: '#F8FAFC', boxSizing: 'border-box', outline: 'none' }} />
+                    </div>
+                    <div style={{ marginBottom: 20 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>Contraseña</div>
+                        <div style={{ position: 'relative' }}>
+                            <input type={showPass ? 'text' : 'password'} value={pass} onChange={e => { setPass(e.target.value); setErr(''); }} onKeyDown={e => e.key === 'Enter' && tryLogin()} placeholder="••••••••" style={{ width: '100%', padding: '12px 44px 12px 14px', border: '1.5px solid #E2E8F0', borderRadius: 10, fontSize: 15, color: '#0F172A', background: '#F8FAFC', boxSizing: 'border-box', outline: 'none' }} />
+                            <button type="button" onClick={() => setShowPass(v => !v)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: showPass ? '#1D4ED8' : '#94A3B8', padding: 4, display: 'flex', alignItems: 'center' }}>
+                                {showPass
+                                    ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                                    : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                    {err && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '9px 12px', fontSize: 12, color: '#EF4444', marginBottom: 14 }}>{err}</div>}
+                    <button onClick={tryLogin} disabled={loading || !user || !pass} style={{ width: '100%', padding: '14px', background: (!user || !pass) ? '#CBD5E1' : '#1D4ED8', color: '#fff', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
+                        {loading ? 'Ingresando...' : 'Ingresar'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ProveedoresView({ setView }) {
+    const [provs, setProvs] = useState([]);
+    const [loaded, setLoaded] = useState(false);
+    const [showNew, setShowNew] = useState(false);
+    const [editId, setEditId] = useState(null);
+    const [form, setForm] = useState({ nombre: '', rubro: '', contacto: '', telefono: '', email: '', cuit: '', obs: '' });
+    
+    useEffect(() => {
+        (async () => {
+            try { const r = await storage.get('bcm_proveedores'); if (r?.value) setProvs(JSON.parse(r.value)); } catch {}
+            setLoaded(true);
+        })();
+    }, []);
+    useEffect(() => { if (loaded) storage.set('bcm_proveedores', JSON.stringify(provs)).catch(() => {}); }, [provs, loaded]);
+    
+    function openNew() { setForm({ nombre: '', rubro: '', contacto: '', telefono: '', email: '', cuit: '', obs: '' }); setEditId(null); setShowNew(true); }
+    function openEdit(p) { setForm({ nombre: p.nombre, rubro: p.rubro || '', contacto: p.contacto || '', telefono: p.telefono || '', email: p.email || '', cuit: p.cuit || '', obs: p.obs || '' }); setEditId(p.id); setShowNew(true); }
+    function save() {
+        if (!form.nombre.trim()) return;
+        if (editId) { setProvs(p => p.map(x => x.id === editId ? { ...x, ...form } : x)); }
+        else { setProvs(p => [...p, { ...form, id: uid(), fecha: new Date().toLocaleDateString('es-AR') }]); }
+        setShowNew(false); setEditId(null);
+    }
+    function del(id) { if (confirm('¿Eliminar proveedor?')) setProvs(p => p.filter(x => x.id !== id)); }
+    
+    const RUBROS = ['Electricidad', 'Plomería', 'Construcción', 'Pintura', 'Climatización', 'Seguridad', 'Limpieza', 'Transporte', 'Materiales', 'Otro'];
+    
+    return (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <AppHeader title="Proveedores" back onBack={() => setView('mas')} right={<PlusBtn onClick={openNew} />} />
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 18px', paddingBottom: 80 }}>
+                {provs.length === 0 && <div style={{ textAlign: 'center', padding: '48px 0' }}>
+                    <div style={{ fontSize: 40, marginBottom: 12 }}>🏪</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>Sin proveedores</div>
+                    <div style={{ fontSize: 12, color: T.muted, marginTop: 6 }}>Agregá tu primer proveedor</div>
+                </div>}
+                {provs.map(p => (
+                    <Card key={p.id} style={{ padding: '13px 14px', marginBottom: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                            <div style={{ width: 40, height: 40, borderRadius: 10, background: T.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🏪</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{p.nombre}</div>
+                                {p.rubro && <div style={{ fontSize: 11, color: T.accent, fontWeight: 600, marginTop: 1 }}>{p.rubro}</div>}
+                                {p.contacto && <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>👤 {p.contacto}</div>}
+                                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                                    {p.telefono && <a href={`https://wa.me/${p.telefono}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}><button style={{ background: '#DCF8C6', border: '1px solid #86EFAC', borderRadius: 7, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: '#16A34A', cursor: 'pointer' }}>💬 WhatsApp</button></a>}
+                                    {p.email && <a href={`mailto:${p.email}`} style={{ textDecoration: 'none' }}><button style={{ background: T.accentLight, border: `1px solid ${T.border}`, borderRadius: 7, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: T.accent, cursor: 'pointer' }}>✉️ Email</button></a>}
+                                    <button onClick={() => openEdit(p)} style={{ background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: 7, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: '#F97316', cursor: 'pointer' }}>✏️ Editar</button>
+                                    <button onClick={() => del(p.id)} style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 7, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: '#EF4444', cursor: 'pointer' }}>✕</button>
+                                </div>
+                            </div>
+                        </div>
+                        {p.obs && <div style={{ marginTop: 8, fontSize: 11, color: T.muted, background: T.bg, borderRadius: 7, padding: '7px 10px' }}>{p.obs}</div>}
+                    </Card>
+                ))}
+            </div>
+            {showNew && <Sheet title={editId ? 'Editar proveedor' : 'Nuevo proveedor'} onClose={() => { setShowNew(false); setEditId(null); }}>
+                <Field label="Nombre *"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Electricidad SA" /></Field>
+                <Field label="Rubro"><Sel value={form.rubro} onChange={e => setForm(p => ({ ...p, rubro: e.target.value }))}><option value="">Seleccionar...</option>{RUBROS.map(r => <option key={r} value={r}>{r}</option>)}</Sel></Field>
+                <Field label="Contacto"><TInput value={form.contacto} onChange={e => setForm(p => ({ ...p, contacto: e.target.value }))} placeholder="Juan Pérez" /></Field>
+                <FieldRow>
+                    <Field label="WhatsApp"><TInput value={form.telefono} onChange={e => setForm(p => ({ ...p, telefono: e.target.value.replace(/\D/g, '') }))} placeholder="5491155556666" /></Field>
+                    <Field label="CUIT"><TInput value={form.cuit} onChange={e => setForm(p => ({ ...p, cuit: e.target.value }))} placeholder="20-12345678-9" /></Field>
+                </FieldRow>
+                <Field label="Email"><TInput value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} placeholder="proveedor@email.com" /></Field>
+                <Field label="Observaciones"><TInput value={form.obs} onChange={e => setForm(p => ({ ...p, obs: e.target.value }))} placeholder="Notas..." /></Field>
+                <PBtn full onClick={save} disabled={!form.nombre.trim()}>{editId ? 'Guardar cambios' : 'Agregar proveedor'}</PBtn>
+            </Sheet>}
+        </div>
+    );
+}
+
 
 export default function App() {
     const [view, setView] = useState("chat");
@@ -3834,6 +4959,10 @@ export default function App() {
     const [detailObraId, setDetailObraId] = useState(null);
     const [authed, setAuthed] = useState(null);
     const [authModal, setAuthModal] = useState(null);
+    const [loggedIn, setLoggedIn] = useState(false);
+    const [currentUser, setCurrentUser] = useState(null);
+    const [unreadMsgs, setUnreadMsgs] = useState(0);
+    const [showMsgBanner, setShowMsgBanner] = useState(false);
     const [chatMsgs, setChatMsgs] = useState([]);
     const [cargarState, setCargarState] = useState({ obraId: '', newFotos: [], report: '' });
     const [cfg, setCfg] = useState(DEFAULT_CONFIG);
@@ -3936,26 +5065,108 @@ export default function App() {
         else { setAuthModal({ onSuccess: (u) => { setAuthed(u); action(); setAuthModal(null); }, onClose: () => setAuthModal(null), titulo: `🔒 ${titulo}` }); }
     }
     const nav = (v) => { setDetailObraId(null); setView(v); };
+    // Expose personal for login check
+    useEffect(() => { window.__bcm_personal__ = personal; }, [personal]);
+
+    // Auto-check payment alerts
+    useEffect(() => {
+        if (!dataLoaded) return;
+        obras.forEach(o => {
+            if (o.estado !== 'curso') return;
+            const total = parseFloat(String(o.monto || '0').replace(/[^0-9.]/g,'')) || 0;
+            const pagado = parseFloat(o.pagado || 0);
+            if (total <= 0) return;
+            const pct = pagado / total * 100;
+            const saldo = total - pagado;
+            if (pct > 90) {
+                const msg = `💳 "${o.nombre}": presupuesto al ${Math.round(pct)}% — quedan $${saldo.toLocaleString('es-AR')}`;
+                if (!alerts.some(a => a.msg === msg))
+                    setAlerts(p => [...p, { id: uid(), prioridad: 'alta', msg }]);
+            }
+        });
+    }, [dataLoaded, obras]);
+
+    // Auto-check document expiry and create alerts
+    useEffect(() => {
+        if (!dataLoaded) return;
+        const hoy = new Date();
+        const nuevasAlertas = [];
+        personal.forEach(p => {
+            Object.entries(p.docs || {}).forEach(([did, doc]) => {
+                if (!doc?.vence) return;
+                const [d, m, y] = doc.vence.split('/');
+                if (!d || !m || !y) return;
+                const vence = new Date(`20${y}`, m - 1, d);
+                const diasRestantes = Math.ceil((vence - hoy) / (1000 * 60 * 60 * 24));
+                if (diasRestantes <= 7 && diasRestantes >= 0) {
+                    const msg = `⚠️ ${p.nombre}: ${doc.nombre || did.toUpperCase()} vence en ${diasRestantes === 0 ? 'HOY' : diasRestantes + ' día' + (diasRestantes > 1 ? 's' : '')}`;
+                    const yaExiste = alerts.some(a => a.msg === msg);
+                    if (!yaExiste) nuevasAlertas.push({ id: uid(), prioridad: diasRestantes <= 2 ? 'alta' : 'media', msg });
+                } else if (diasRestantes < 0) {
+                    const msg = `🔴 ${p.nombre}: ${doc.nombre || did.toUpperCase()} VENCIDO hace ${Math.abs(diasRestantes)} día${Math.abs(diasRestantes) > 1 ? 's' : ''}`;
+                    const yaExiste = alerts.some(a => a.msg === msg);
+                    if (!yaExiste) nuevasAlertas.push({ id: uid(), prioridad: 'alta', msg });
+                }
+            });
+        });
+        if (nuevasAlertas.length > 0) setAlerts(p => [...p, ...nuevasAlertas]);
+    }, [dataLoaded, personal]);
+
+    // Check unread messages every 15 seconds
+    useEffect(() => {
+        if (!loggedIn || !currentUser) return;
+        const miUser = currentUser.user || currentUser.nombre || 'admin';
+        async function checkUnread() {
+            try {
+                const r = await fetch(`${SUPA_URL}/rest/v1/bcm_mensajes?para=eq.${encodeURIComponent(miUser)}&leido=eq.false&select=id`, { headers: SH() });
+                if (r.ok) {
+                    const d = await r.json();
+                    const count = d?.length || 0;
+                    setUnreadMsgs(count);
+                    if (count > 0) setShowMsgBanner(true);
+                }
+            } catch {}
+        }
+        checkUnread();
+        const interval = setInterval(checkUnread, 15000);
+        return () => clearInterval(interval);
+    }, [loggedIn, currentUser]);
     const hideBrand = ["archivos", "seguimiento", "mensajes"].includes(view);
+
+    if (!loggedIn) return <LoginScreen loginLogo={cfg?.logoCentral || cfg?.logoBelfast} onLogin={u => { setLoggedIn(true); setCurrentUser(u); setAuthed(u.rol === 'Administrador' ? u : null); }} />;
 
     return (
         <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: T.bg, fontFamily: `var(--font,'Plus Jakarta Sans'),sans-serif`, maxWidth: 480, margin: "0 auto", overflow: "hidden" }}>
             <style>{css}</style>
             <style>{buildThemeCSS(cfg)}</style>
+            {showMsgBanner && unreadMsgs > 0 && (
+                <div onClick={() => { nav("mensajes"); setShowMsgBanner(false); }} style={{ position: "fixed", top: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#1D4ED8", color: "#fff", padding: "12px 18px", display: "flex", alignItems: "center", gap: 10, zIndex: 999, cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,.25)" }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M4.913 2.658c2.075-.27 4.19-.408 6.337-.408 2.147 0 4.262.139 6.337.408 1.922.25 3.291 1.861 3.405 3.727a4.403 4.403 0 00-1.032-.211 50.89 50.89 0 00-8.42 0c-2.358.196-4.04 2.19-4.04 4.434v4.286a4.47 4.47 0 002.433 3.984L7.28 21.53A.75.75 0 016 21v-4.03a48.527 48.527 0 01-1.087-.128C2.905 16.58 1.5 14.833 1.5 12.862V6.638c0-1.97 1.405-3.718 3.413-3.979z"/></svg>
+                    <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700 }}>Tenés {unreadMsgs} mensaje{unreadMsgs > 1 ? 's' : ''} nuevo{unreadMsgs > 1 ? 's' : ''}</div>
+                        <div style={{ fontSize: 11, opacity: .8 }}>Tocá para ver</div>
+                    </div>
+                    <button onClick={e => { e.stopPropagation(); setShowMsgBanner(false); }} style={{ background: "rgba(255,255,255,.2)", border: "none", borderRadius: 6, width: 26, height: 26, color: "#fff", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+                </div>
+            )}
             {!hideBrand && <AppBrand cfg={cfg} />}
             <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-                {view === "dashboard" && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} />}
+                {view === "dashboard" && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} customIcons={typeof window !== "undefined" ? (JSON.parse(localStorage.getItem("bcm_icons") || "{}")) : {}} />}
                 {view === "licitaciones" && <Licitaciones lics={lics} setLics={setLics} requireAuth={requireAuth} cfg={cfg} obras={obras} setObras={setObras} />}
                 {view === "obras" && <Obras obras={obras} setObras={setObras} lics={lics} detailId={detailObraId} setDetailId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} apiKey={apiKey} />}
                 {view === "personal" && <Personal personal={personal} setPersonal={setPersonal} obras={obras} cfg={cfg} />}
-                {view === "mas" && <Mas setView={nav} authed={authed} setAuthed={setAuthed} requireAuth={requireAuth} cfg={cfg} setCfg={setCfg} apiKey={apiKey} setApiKey={setApiKey} cfgLocked={cfgLocked} setCfgLocked={setCfgLocked} lics={lics} obras={obras} personal={personal} alerts={alerts} />}
+                {view === "mas" && <Mas setView={nav} authed={authed} setAuthed={setAuthed} requireAuth={requireAuth} cfg={cfg} setCfg={setCfg} apiKey={apiKey} setApiKey={setApiKey} cfgLocked={cfgLocked} setCfgLocked={setCfgLocked} lics={lics} obras={obras} personal={personal} alerts={alerts} currentUser={currentUser} />}
                 {view === "archivos" && <Archivos setView={nav} />}
                 {view === "seguimiento" && <Seguimiento alerts={alerts} setAlerts={setAlerts} setView={nav} />}
-                {view === "mensajes" && <MensajesView personal={personal} setView={nav} />}
+                {view === "mensajes" && <MensajesView personal={personal} setView={nav} currentUser={currentUser} />}
                 {view === "resumen" && <ResumenView lics={lics} obras={obras} personal={personal} alerts={alerts} setView={nav} />}
                 {view === "cargar" && <CargarView obras={obras} setObras={setObras} cargarState={cargarState} setCargarState={setCargarState} apiKey={apiKey} />}
                 {view === "contactos" && <ContactosView setView={nav} onContactosChange={setContactos} />}
                 {view === "whatsapp" && <WhatsappGrupos personal={personal} setView={nav} />}
+                {view === "proveedores" && <ProveedoresView setView={nav} />}
+                {view === "info_externa" && <InfoExternaView setView={nav} />}
+                {view === "info_util" && <InfoUtilView setView={nav} />}
+                {view === "gantt" && <GanttView obras={obras} setView={nav} />}
                 {view === "informes_ingeniero" && <InformesIngeniero setView={nav} />}
                 {view === "informes_ia" && <InformesIA obras={obras} personal={personal} lics={lics} alerts={alerts} setView={nav} apiKey={apiKey} cfg={cfg} />}
                 {view === "vigilancia" && <PanelVigilancia setView={nav} />}
