@@ -1831,6 +1831,18 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
     async function buildContext() {
         let pm = [], ps = [], camaras = [], pres = {};
         try { const r1 = await storage.get('bcm_presup_materiales'); if (r1?.value) pm = JSON.parse(r1.value); const r2 = await storage.get('bcm_presup_subcontratos'); if (r2?.value) ps = JSON.parse(r2.value); const r3 = await storage.get('bcm_camaras'); if (r3?.value) camaras = JSON.parse(r3.value); const r4 = await storage.get('bcm_presentismo'); if (r4?.value) pres = JSON.parse(r4.value); } catch { }
+        
+        // Fetch real-time external data in parallel
+        let dolarData = null, climaData = null;
+        try {
+            const [dolarRes, climaRes] = await Promise.allSettled([
+                fetch('https://dolarapi.com/v1/dolares').then(r => r.ok ? r.json() : null),
+                fetch('https://wttr.in/Buenos+Aires?format=j1').then(r => r.ok ? r.json() : null)
+            ]);
+            if (dolarRes.status === 'fulfilled') dolarData = dolarRes.value;
+            if (climaRes.status === 'fulfilled') climaData = climaRes.value;
+        } catch {}
+
         const today = new Date().toLocaleDateString('es-AR');
         const empresa = cfg?.empresa || 'BelfastCM'; const emailIA = cfg?.email || EMAIL_IA;
         let c = \`Sos el Asistente IA de \${empresa}. Email: \${emailIA}\${cfg?.cargo ? \`\\nCargo: \${cfg.cargo}\` : ''}\${cfg?.telefono ? \`\\nTel: \${cfg.telefono}\` : ''}\${cfg?.ciudad ? \`\\nSede: \${cfg.ciudad}\` : ''}\\n\\n\`;
@@ -4296,6 +4308,18 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
     async function buildContext() {
         let pm = [], ps = [], camaras = [], pres = {};
         try { const r1 = await storage.get('bcm_presup_materiales'); if (r1?.value) pm = JSON.parse(r1.value); const r2 = await storage.get('bcm_presup_subcontratos'); if (r2?.value) ps = JSON.parse(r2.value); const r3 = await storage.get('bcm_camaras'); if (r3?.value) camaras = JSON.parse(r3.value); const r4 = await storage.get('bcm_presentismo'); if (r4?.value) pres = JSON.parse(r4.value); } catch { }
+        
+        // Fetch real-time external data in parallel
+        let dolarData = null, climaData = null;
+        try {
+            const [dolarRes, climaRes] = await Promise.allSettled([
+                fetch('https://dolarapi.com/v1/dolares').then(r => r.ok ? r.json() : null),
+                fetch('https://wttr.in/Buenos+Aires?format=j1').then(r => r.ok ? r.json() : null)
+            ]);
+            if (dolarRes.status === 'fulfilled') dolarData = dolarRes.value;
+            if (climaRes.status === 'fulfilled') climaData = climaRes.value;
+        } catch {}
+
         const today = new Date().toLocaleDateString('es-AR');
         const empresa = cfg?.empresa || 'BelfastCM'; const emailIA = cfg?.email || EMAIL_IA;
         let c = `Sos el Asistente IA de ${empresa}. Email: ${emailIA}${cfg?.cargo ? `\nCargo: ${cfg.cargo}` : ''}${cfg?.telefono ? `\nTel: ${cfg.telefono}` : ''}${cfg?.ciudad ? `\nSede: ${cfg.ciudad}` : ''}\n\n`;
@@ -4318,6 +4342,21 @@ function Chat({ contactos, lics, obras, personal, alerts, msgs, setMsgs, cfg, ap
         if (pm.length) { c += `\n📦 MATERIALES\n`; pm.forEach(i => c += `• ${i.descripcion} | ${i.proveedor || '—'} | ${i.monto || '—'} | ${i.estado}\n`); c += `  TOTAL: $${pm.reduce((s, i) => s + (parseFloat((i.monto || '').replace(/[^0-9.]/g, '')) || 0), 0).toLocaleString('es-AR')}\n`; }
         if (ps.length) { c += `\n🤝 SUBCONTRATOS\n`; ps.forEach(i => c += `• ${i.descripcion} | ${i.proveedor || '—'} | ${i.monto || '—'} | ${i.estado}\n`); c += `  TOTAL: $${ps.reduce((s, i) => s + (parseFloat((i.monto || '').replace(/[^0-9.]/g, '')) || 0), 0).toLocaleString('es-AR')}\n`; }
         if (contactos?.length) { c += `\n📧 CONTACTOS\n`; contactos.forEach(x => c += `• ${x.nombre} | ${x.empresa || ''} | ${x.email}\n`); }
+
+        // Real-time external data
+        if (dolarData?.length) {
+            c += `\n💵 COTIZACIÓN DÓLAR (tiempo real)\n`;
+            const tipos = { oficial: 'Oficial', blue: 'Blue', bolsa: 'Bolsa/MEP', contadoconliqui: 'CCL', tarjeta: 'Tarjeta' };
+            dolarData.filter(d => tipos[d.casa]).forEach(d => {
+                c += `• ${tipos[d.casa]}: Compra $${d.compra?.toLocaleString('es-AR')} / Venta $${d.venta?.toLocaleString('es-AR')}\n`;
+            });
+        }
+        if (climaData) {
+            const cur = climaData.current_condition?.[0];
+            const w = climaData.weather?.[0];
+            if (cur) c += `\n🌤 CLIMA BUENOS AIRES (tiempo real)\nActual: ${cur.temp_C}°C, ${cur.weatherDesc?.[0]?.value}, Humedad ${cur.humidity}%, Viento ${cur.windspeedKmph}km/h\n`;
+            if (w) c += `Hoy: Máx ${w.maxtempC}°C / Mín ${w.mintempC}°C, Lluvia ${w.hourly?.[4]?.chanceofrain || 0}%\n`;
+        }
         if (camaras.length) { c += `\n📹 CÁMARAS (${camaras.length})\n`; }
         const todayRecs = Object.entries(pres.registros || {}).filter(([k]) => k.endsWith(today)).map(([, v]) => v);
         if (todayRecs.length) { c += `\n🕐 PRESENTISMO HOY\n`; todayRecs.forEach(r => c += `• ${r.nombre}: ${r.entrada}${r.salida ? `–${r.salida}` : '(en obra)'}\n`); }
