@@ -1911,8 +1911,14 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [listening, setListening] = useState(false);
-    const [userName, setUserName] = useState('');
-    const [askedName, setAskedName] = useState(false);
+    // Cargar el nombre desde localStorage SINCRÓNICAMENTE para evitar el "flash" de la pantalla de nombre
+    const [userName, setUserName] = useState(() => {
+        try { return localStorage.getItem('bcm_chat_user') || ''; } catch { return ''; }
+    });
+    const [askedName, setAskedName] = useState(() => {
+        try { return !!localStorage.getItem('bcm_chat_user'); } catch { return false; }
+    });
+    const [chatLoaded, setChatLoaded] = useState(false);
     const [attach, setAttach] = useState(null); // { url, name, type, isImage }
     const [showSaveDialog, setShowSaveDialog] = useState(null); // el adjunto que se quiere guardar
     const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -1922,7 +1928,20 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
     const fileRef = useRef(null);
     const recognitionRef = useRef(null);
 
-    useEffect(() => { (async () => { try { const r = await storage.get('bcm_chat_user'); if (r?.value) { setUserName(r.value); setAskedName(true); } } catch { } })(); }, []);
+    // También consultar Supabase por si fue guardado desde otro dispositivo
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = await storage.get('bcm_chat_user');
+                if (r?.value && r.value !== userName) {
+                    setUserName(r.value);
+                    setAskedName(true);
+                    try { localStorage.setItem('bcm_chat_user', r.value); } catch { }
+                }
+            } catch { }
+            setChatLoaded(true);
+        })();
+    }, []);
     useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [msgs]);
 
     function buildContext() {
@@ -1957,6 +1976,7 @@ El usuario se llama: ${userName || 'desconocido'}.`;
             setUserName(txt);
             setAskedName(true);
             try { await storage.set('bcm_chat_user', txt); } catch { }
+            try { localStorage.setItem('bcm_chat_user', txt); } catch { }
             setInput('');
             setTimeout(() => setMsgs(p => [...p, { id: uid(), role: 'assistant', text: `Hola ${txt}, soy tu asistente IA para BelfastCM. Tengo acceso en tiempo real a todas tus obras, licitaciones, personal y alertas. ¿En qué puedo ayudarte?` }]), 400);
             return;
@@ -2079,7 +2099,7 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
                             </button>
                         ))}
                     </div>
-                    {userName && <button onClick={async () => { setUserName(''); setAskedName(false); try { await storage.delete('bcm_chat_user'); } catch { } }} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", marginTop: 20 }}>
+                    {userName && <button onClick={async () => { setUserName(''); setAskedName(false); try { await storage.delete('bcm_chat_user'); } catch { } try { localStorage.removeItem('bcm_chat_user'); } catch { } }} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", marginTop: 20 }}>
                         No soy {userName}
                     </button>}
                 </div>
@@ -2418,20 +2438,24 @@ function LoginScreen({ onLogin, cfg, personal }) {
 // ── APP PRINCIPAL ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 export default function App() {
-    const [user, setUser] = useState(null);
+    // Helpers de carga sincrónica desde localStorage (evita el "flash" y que se pisen con valores vacíos)
+    function getLocalJSON(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch { return def; } }
+    function getLocalStr(k, def = '') { try { return localStorage.getItem(k) || def; } catch { return def; } }
+
+    const [user, setUser] = useState(() => getLocalJSON('bcm_current_user', null));
     const [view, setView] = useState('dashboard');
     const [detailObraId, setDetailObraId] = useState(null);
-    const [lics, setLics] = useState([]);
-    const [obras, setObras] = useState([]);
-    const [personal, setPersonal] = useState([]);
+    const [lics, setLics] = useState(() => getLocalJSON('bcm_lics', []));
+    const [obras, setObras] = useState(() => getLocalJSON('bcm_obras', []));
+    const [personal, setPersonal] = useState(() => getLocalJSON('bcm_personal', []));
     const [alerts, setAlerts] = useState([]);
-    const [cfg, setCfg] = useState(DEFAULT_CONFIG);
-    const [apiKey, setApiKey] = useState('');
+    const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CONFIG, ...getLocalJSON('bcm_cfg', {}) }));
+    const [apiKey, setApiKey] = useState(() => getLocalStr('bcm_api_key', ''));
     const [loaded, setLoaded] = useState(false);
     const [authRequest, setAuthRequest] = useState(null);
     const [cargarState, setCargarState] = useState({ obraId: '', newFotos: [], report: '' });
 
-    // Cargar todo desde storage al inicio
+    // Cargar desde Supabase al inicio (sincroniza con la nube si hay datos más nuevos)
     useEffect(() => {
         (async () => {
             try {
@@ -2443,7 +2467,8 @@ export default function App() {
                 if (rObras?.value) try { setObras(JSON.parse(rObras.value)); } catch { }
                 if (rPers?.value) try { setPersonal(JSON.parse(rPers.value)); } catch { }
                 if (rCfg?.value) try { setCfg(c => ({ ...DEFAULT_CONFIG, ...JSON.parse(rCfg.value) })); } catch { }
-                if (rKey?.value) setApiKey(rKey.value);
+                // Solo aplicar API key remota si hay valor real (no vacío) — protege de borrarla por bug
+                if (rKey?.value && rKey.value.trim()) setApiKey(rKey.value);
                 if (rUser?.value) try { setUser(JSON.parse(rUser.value)); } catch { }
             } catch { }
             setLoaded(true);
@@ -2454,13 +2479,20 @@ export default function App() {
     const lastLocalEditRef = useRef({ lics: 0, obras: 0, personal: 0, cfg: 0 });
     function markLocalEdit(key) { lastLocalEditRef.current[key] = Date.now(); }
 
-    // Persistir cambios (con marca de última edición local)
-    useEffect(() => { if (loaded) { markLocalEdit('lics'); storage.set('bcm_lics', JSON.stringify(lics)).catch(() => { }); } }, [lics, loaded]);
-    useEffect(() => { if (loaded) { markLocalEdit('obras'); storage.set('bcm_obras', JSON.stringify(obras)).catch(() => { }); } }, [obras, loaded]);
-    useEffect(() => { if (loaded) { markLocalEdit('personal'); storage.set('bcm_personal', JSON.stringify(personal)).catch(() => { }); } }, [personal, loaded]);
-    useEffect(() => { if (loaded) { markLocalEdit('cfg'); storage.set('bcm_cfg', JSON.stringify(cfg)).catch(() => { }); } }, [cfg, loaded]);
-    useEffect(() => { if (loaded) storage.set('bcm_api_key', apiKey || '').catch(() => { }); }, [apiKey, loaded]);
-    useEffect(() => { if (loaded && user) storage.set('bcm_current_user', JSON.stringify(user)).catch(() => { }); }, [user, loaded]);
+    // Persistir cambios (con marca de última edición local + localStorage para arranque sincrónico)
+    useEffect(() => { if (loaded) { markLocalEdit('lics'); storage.set('bcm_lics', JSON.stringify(lics)).catch(() => { }); try { localStorage.setItem('bcm_lics', JSON.stringify(lics)); } catch { } } }, [lics, loaded]);
+    useEffect(() => { if (loaded) { markLocalEdit('obras'); storage.set('bcm_obras', JSON.stringify(obras)).catch(() => { }); try { localStorage.setItem('bcm_obras', JSON.stringify(obras)); } catch { } } }, [obras, loaded]);
+    useEffect(() => { if (loaded) { markLocalEdit('personal'); storage.set('bcm_personal', JSON.stringify(personal)).catch(() => { }); try { localStorage.setItem('bcm_personal', JSON.stringify(personal)); } catch { } } }, [personal, loaded]);
+    useEffect(() => { if (loaded) { markLocalEdit('cfg'); storage.set('bcm_cfg', JSON.stringify(cfg)).catch(() => { }); try { localStorage.setItem('bcm_cfg', JSON.stringify(cfg)); } catch { } } }, [cfg, loaded]);
+    useEffect(() => {
+        if (!loaded) return;
+        // Solo guardar si la API key tiene contenido — no sobrescribir con vacío
+        if (apiKey && apiKey.trim()) {
+            storage.set('bcm_api_key', apiKey).catch(() => { });
+            try { localStorage.setItem('bcm_api_key', apiKey); } catch { }
+        }
+    }, [apiKey, loaded]);
+    useEffect(() => { if (loaded && user) { storage.set('bcm_current_user', JSON.stringify(user)).catch(() => { }); try { localStorage.setItem('bcm_current_user', JSON.stringify(user)); } catch { } } }, [user, loaded]);
 
     // Sync tiempo real cada 3 segundos desde Supabase
     // Solo aplica cambios remotos si NO hubo edición local en los últimos 4 segundos (evita pisarse a sí mismo)
