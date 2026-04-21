@@ -529,8 +529,199 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
                     </div>
                 );
             })()}
-            <PBtn full variant="danger" onClick={() => del(detail.id)}>Eliminar</PBtn>
+
+            {/* ── REGISTRO FOTOGRÁFICO DE VISITAS ────────────────────── */}
+            <RegistroVisitas
+                visitas={detail.visitas || []}
+                onUpdate={nuevasVisitas => setLics(p => p.map(l => l.id === detail.id ? { ...l, visitas: nuevasVisitas } : l))}
+            />
+
+            <PBtn full variant="danger" onClick={() => del(detail.id)} style={{ marginTop: 8 }}>Eliminar licitación</PBtn>
         </Sheet>)}
+    </div>);
+}
+
+// ── REGISTRO FOTOGRÁFICO DE VISITAS (usado en Licitaciones) ──────────
+const ETAPAS_VISITA = [
+    { id: 'antes', label: 'Antes', color: '#F59E0B', bg: '#FFFBEB' },
+    { id: 'durante', label: 'Durante', color: '#3B82F6', bg: '#EFF6FF' },
+    { id: 'despues', label: 'Después', color: '#10B981', bg: '#ECFDF5' },
+];
+
+function RegistroVisitas({ visitas, onUpdate }) {
+    const camRef = useRef(null);
+    const galRef = useRef(null);
+    const [nuevaDesc, setNuevaDesc] = useState('');
+    const [nuevaEtapa, setNuevaEtapa] = useState('antes');
+    const [cargando, setCargando] = useState(false);
+    const [vistaFoto, setVistaFoto] = useState(null); // foto ampliada
+    const [filtroEtapa, setFiltroEtapa] = useState('todas');
+
+    async function subirFotos(e) {
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+        setCargando(true);
+        const nuevas = await Promise.all(files.map(async f => ({
+            id: uid(),
+            url: await toDataUrl(f),
+            nombre: f.name,
+            desc: nuevaDesc.trim(),
+            etapa: nuevaEtapa,
+            fecha: new Date().toLocaleDateString('es-AR'),
+            hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+        })));
+        onUpdate([...visitas, ...nuevas]);
+        setNuevaDesc('');
+        setCargando(false);
+        e.target.value = '';
+    }
+
+    function editarDesc(id, desc) {
+        onUpdate(visitas.map(v => v.id === id ? { ...v, desc } : v));
+    }
+    function cambiarEtapa(id, etapa) {
+        onUpdate(visitas.map(v => v.id === id ? { ...v, etapa } : v));
+    }
+    function eliminar(id) {
+        onUpdate(visitas.filter(v => v.id !== id));
+    }
+
+    const filtradas = filtroEtapa === 'todas' ? visitas : visitas.filter(v => v.etapa === filtroEtapa);
+    const contPorEtapa = etapa => visitas.filter(v => v.etapa === etapa).length;
+
+    return (<div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <Lbl>Registro fotográfico de visitas ({visitas.length})</Lbl>
+        </div>
+
+        {/* Selector de etapa + descripción + botones de subida */}
+        <div style={{ background: T.bg, borderRadius: T.rsm, padding: "12px", marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
+                {ETAPAS_VISITA.map(et => (
+                    <button key={et.id} onClick={() => setNuevaEtapa(et.id)}
+                        style={{ flex: 1, padding: "7px 4px", borderRadius: T.rsm, border: `1.5px solid ${nuevaEtapa === et.id ? et.color : T.border}`, background: nuevaEtapa === et.id ? et.bg : T.card, color: et.color, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                        {et.label}
+                    </button>
+                ))}
+            </div>
+            <textarea
+                value={nuevaDesc}
+                onChange={e => setNuevaDesc(e.target.value)}
+                placeholder="Descripción de la visita (opcional)..."
+                rows={2}
+                style={{ width: "100%", background: T.card, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "8px 12px", fontSize: 12, color: T.text, marginBottom: 8, resize: "none" }}
+            />
+            <input ref={camRef} type="file" accept="image/*" capture="environment" multiple onChange={subirFotos} style={{ display: "none" }} />
+            <input ref={galRef} type="file" accept="image/*" multiple onChange={subirFotos} style={{ display: "none" }} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <button onClick={() => camRef.current?.click()} disabled={cargando}
+                    style={{ background: T.navy, border: "none", borderRadius: T.rsm, padding: "10px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.75 3.75 0 100 7.5A3.75 3.75 0 0012 9z" /><path fillRule="evenodd" d="M9.344 3.071a49.52 49.52 0 015.312 0c.967.052 1.83.585 2.332 1.39l.821 1.317c.24.383.645.643 1.11.71.386.054.77.113 1.152.177 1.432.239 2.429 1.493 2.429 2.909V18a3 3 0 01-3 3H6a3 3 0 01-3-3V9.574c0-1.416.997-2.67 2.429-2.909.382-.064.766-.123 1.151-.178a1.56 1.56 0 001.11-.71l.822-1.315a2.942 2.942 0 012.332-1.39zM6.75 12.75a5.25 5.25 0 1110.5 0 5.25 5.25 0 01-10.5 0z" clipRule="evenodd" /></svg>
+                    {cargando ? 'Subiendo...' : 'Tomar foto'}
+                </button>
+                <button onClick={() => galRef.current?.click()} disabled={cargando}
+                    style={{ background: T.card, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "10px", color: T.text, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" /></svg>
+                    Galería / PC
+                </button>
+            </div>
+        </div>
+
+        {/* Filtros por etapa */}
+        {visitas.length > 0 && (<div style={{ display: "flex", gap: 5, marginBottom: 10, overflowX: "auto" }}>
+            <button onClick={() => setFiltroEtapa('todas')} style={{ flexShrink: 0, padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${filtroEtapa === 'todas' ? T.accent : T.border}`, background: filtroEtapa === 'todas' ? T.accentLight : T.card, color: filtroEtapa === 'todas' ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                Todas ({visitas.length})
+            </button>
+            {ETAPAS_VISITA.map(et => (
+                <button key={et.id} onClick={() => setFiltroEtapa(et.id)} style={{ flexShrink: 0, padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${filtroEtapa === et.id ? et.color : T.border}`, background: filtroEtapa === et.id ? et.bg : T.card, color: et.color, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    {et.label} ({contPorEtapa(et.id)})
+                </button>
+            ))}
+        </div>)}
+
+        {/* Comparación Antes/Después si hay fotos de ambas etapas */}
+        {visitas.some(v => v.etapa === 'antes') && visitas.some(v => v.etapa === 'despues') && filtroEtapa === 'todas' && (<div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Comparación antes / después</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "#F59E0B", marginBottom: 4, textAlign: "center", textTransform: "uppercase" }}>Antes</div>
+                    {visitas.filter(v => v.etapa === 'antes').slice(-1).map(f => (
+                        <div key={f.id} onClick={() => setVistaFoto(f)} style={{ cursor: "pointer" }}>
+                            <img src={f.url} alt="" style={{ width: "100%", aspectRatio: "4/3", objectFit: "cover", borderRadius: 10, border: "2px solid #F59E0B" }} />
+                            <div style={{ fontSize: 9, color: T.muted, marginTop: 3, textAlign: "center" }}>{f.fecha} {f.hora}</div>
+                        </div>
+                    ))}
+                </div>
+                <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 4, textAlign: "center", textTransform: "uppercase" }}>Después</div>
+                    {visitas.filter(v => v.etapa === 'despues').slice(-1).map(f => (
+                        <div key={f.id} onClick={() => setVistaFoto(f)} style={{ cursor: "pointer" }}>
+                            <img src={f.url} alt="" style={{ width: "100%", aspectRatio: "4/3", objectFit: "cover", borderRadius: 10, border: "2px solid #10B981" }} />
+                            <div style={{ fontSize: 9, color: T.muted, marginTop: 3, textAlign: "center" }}>{f.fecha} {f.hora}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>)}
+
+        {/* Galería historial */}
+        {filtradas.length === 0 && visitas.length > 0 && (
+            <div style={{ textAlign: "center", padding: "16px 0", color: T.muted, fontSize: 12 }}>Sin fotos en esta etapa</div>
+        )}
+        {filtradas.length === 0 && visitas.length === 0 && (
+            <div style={{ textAlign: "center", padding: "16px 0", color: T.muted, fontSize: 12 }}>Aún no hay fotos de visita. Subí la primera para iniciar el historial.</div>
+        )}
+        {filtradas.map((foto, idx) => {
+            const etapa = ETAPAS_VISITA.find(e => e.id === foto.etapa) || ETAPAS_VISITA[0];
+            return (<div key={foto.id} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, overflow: "hidden", marginBottom: 10 }}>
+                <div onClick={() => setVistaFoto(foto)} style={{ cursor: "pointer", position: "relative" }}>
+                    <img src={foto.url} alt="" style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block" }} />
+                    {/* Badge de etapa */}
+                    <div style={{ position: "absolute", top: 8, left: 8, background: etapa.bg, border: `1px solid ${etapa.color}`, borderRadius: 20, padding: "3px 10px", fontSize: 10, fontWeight: 700, color: etapa.color }}>
+                        {etapa.label}
+                    </div>
+                    {/* Fecha + hora */}
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.6))", padding: "16px 10px 6px", fontSize: 10, color: "#fff" }}>
+                        {foto.fecha} · {foto.hora}
+                    </div>
+                </div>
+                <div style={{ padding: "10px 12px" }}>
+                    {/* Descripción editable */}
+                    <textarea
+                        value={foto.desc || ''}
+                        onChange={e => editarDesc(foto.id, e.target.value)}
+                        placeholder="Agregar descripción..."
+                        rows={2}
+                        style={{ width: "100%", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, color: T.text, resize: "none", marginBottom: 8 }}
+                    />
+                    {/* Cambiar etapa + borrar */}
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                        {ETAPAS_VISITA.map(et => (
+                            <button key={et.id} onClick={() => cambiarEtapa(foto.id, et.id)}
+                                style={{ padding: "4px 10px", borderRadius: 20, border: `1.5px solid ${foto.etapa === et.id ? et.color : T.border}`, background: foto.etapa === et.id ? et.bg : T.card, color: et.color, fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                                {et.label}
+                            </button>
+                        ))}
+                        <button onClick={() => eliminar(foto.id)}
+                            style={{ marginLeft: "auto", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 20, padding: "4px 10px", fontSize: 10, fontWeight: 700, color: "#EF4444", cursor: "pointer" }}>
+                            Eliminar
+                        </button>
+                    </div>
+                </div>
+            </div>);
+        })}
+
+        {/* Vista ampliada de foto */}
+        {vistaFoto && (
+            <div onClick={() => setVistaFoto(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.92)", zIndex: 999, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}>
+                <img src={vistaFoto.url} alt="" style={{ maxWidth: "100%", maxHeight: "75vh", objectFit: "contain", borderRadius: 10 }} />
+                {vistaFoto.desc && <div style={{ color: "#fff", fontSize: 13, marginTop: 12, textAlign: "center", maxWidth: 340, lineHeight: 1.5 }}>{vistaFoto.desc}</div>}
+                <div style={{ color: "rgba(255,255,255,.6)", fontSize: 11, marginTop: 6 }}>
+                    {ETAPAS_VISITA.find(e => e.id === vistaFoto.etapa)?.label} · {vistaFoto.fecha} {vistaFoto.hora}
+                </div>
+                <div style={{ color: "rgba(255,255,255,.5)", fontSize: 11, marginTop: 16 }}>Tocá para cerrar</div>
+            </div>
+        )}
     </div>);
 }
 
@@ -1546,6 +1737,360 @@ function ResumenView({ lics, obras, personal, alerts, setView }) {
     </div>);
 }
 
+// ── COTIZACIÓN IA ─────────────────────────────────────────────────────
+function CotizacionView({ setView, apiKey, cfg }) {
+    const [foto, setFoto] = useState(null);
+    const [superficie, setSuperficie] = useState('');
+    const [zona, setZona] = useState('');
+    const [tipologia, setTipologia] = useState('refaccion');
+    const [loading, setLoading] = useState(false);
+    const [resultado, setResultado] = useState(null);
+    const [historial, setHistorial] = useState([]);
+    const [loaded, setLoaded] = useState(false);
+    const camRef = useRef(null);
+    const galRef = useRef(null);
+
+    const TIPOLOGIAS = [
+        { id: 'refaccion', label: 'Refacción' },
+        { id: 'demolicion', label: 'Demolición' },
+        { id: 'construccion', label: 'Construcción nueva' },
+        { id: 'pintura', label: 'Pintura' },
+        { id: 'instalaciones', label: 'Instalaciones' },
+        { id: 'terminaciones', label: 'Terminaciones' },
+        { id: 'estructura', label: 'Estructura' },
+        { id: 'exterior', label: 'Exterior/Fachada' },
+    ];
+
+    useEffect(() => {
+        (async () => {
+            try { const r = await storage.get('bcm_cotizaciones'); if (r?.value) setHistorial(JSON.parse(r.value)); } catch { }
+            setLoaded(true);
+        })();
+    }, []);
+    useEffect(() => {
+        if (loaded) storage.set('bcm_cotizaciones', JSON.stringify(historial)).catch(() => {});
+    }, [historial, loaded]);
+
+    async function handleFoto(e) {
+        const f = e.target.files?.[0]; if (!f) return;
+        setFoto({ url: await toDataUrl(f), name: f.name });
+        e.target.value = '';
+    }
+
+    async function cotizar() {
+        if (!apiKey) { alert('Configurá tu API Key en Más → Configuración'); return; }
+        setLoading(true); setResultado(null);
+        try {
+            const hoy = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            const promptBase = `Sos un experto en costos de construcción en Argentina. Hoy es ${hoy}.
+
+Tipología de trabajo: ${TIPOLOGIAS.find(t => t.id === tipologia)?.label || tipologia}
+${superficie ? `Superficie aproximada: ${superficie} m²` : ''}
+${zona ? `Zona/Localidad: ${zona}` : 'Zona: Buenos Aires / AMBA'}
+
+${foto ? 'Analizá la imagen adjunta para identificar el tipo y estado del espacio.' : ''}
+
+Generá una cotización profesional detallada incluyendo:
+
+## 1. ANÁLISIS DEL TRABAJO
+Describí qué tipo de trabajo se requiere basándote en ${foto ? 'la imagen' : 'la tipología indicada'}.
+
+## 2. PRECIOS DE MATERIALES (Argentina, ${hoy})
+Lista los materiales principales con precio unitario actualizado. Tomá como referencia:
+- Revista Cifras (valores publicados este mes)
+- MercadoLibre Argentina (precios de vendedores destacados)
+- Catálogos de Sodimac, Easy, Ferreterías del país
+Formato: | Material | Unidad | Precio unitario | Cantidad est. | Subtotal |
+
+## 3. MANO DE OBRA
+- Precio por m² según gremio correspondiente
+- Jornal oficial actualizado (CCT vigente Argentina)
+- Horas estimadas de trabajo
+
+## 4. RESUMEN DE COSTOS
+| Rubro | Costo por m² | Total estimado |
+|-------|-------------|----------------|
+| Materiales | | |
+| Mano de obra | | |
+| Gastos indirectos (15%) | | |
+| **TOTAL** | | |
+
+## 5. RANGO DE PRECIOS
+- Mínimo (categoría económica): $X/m²
+- Estándar (calidad media): $X/m²  
+- Premium (primera calidad): $X/m²
+
+## 6. OBSERVACIONES
+Alertas de precios, variaciones regionales, plazos estimados.
+
+Todos los precios en PESOS ARGENTINOS ($). Indicá la fuente de referencia de cada precio.`;
+
+            const headers = {
+                "Content-Type": "application/json",
+                "anthropic-dangerous-direct-browser-access": "true",
+                "anthropic-version": "2023-06-01",
+                "x-api-key": apiKey,
+            };
+            const msgs = foto
+                ? [{ role: 'user', content: [
+                    { type: 'image', source: { type: 'base64', media_type: getMediaType(foto.url), data: getBase64(foto.url) } },
+                    { type: 'text', text: promptBase }
+                ]}]
+                : [{ role: 'user', content: promptBase }];
+
+            const r = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST", headers,
+                body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 3000, messages: msgs })
+            });
+            const d = await r.json();
+            const texto = d.content?.map(b => b.text || '').join('') || d.error?.message || 'Error al generar';
+
+            const nueva = {
+                id: uid(),
+                fecha: new Date().toLocaleDateString('es-AR'),
+                hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+                tipologia: TIPOLOGIAS.find(t => t.id === tipologia)?.label,
+                zona: zona || 'AMBA',
+                superficie: superficie || '—',
+                foto: foto?.url || null,
+                texto,
+            };
+            setResultado(nueva);
+            setHistorial(h => [nueva, ...h].slice(0, 20));
+        } catch (e) {
+            setResultado({ id: uid(), texto: 'Error: ' + e.message, fecha: new Date().toLocaleDateString('es-AR') });
+        }
+        setLoading(false);
+    }
+
+    function descargarPDF(item) {
+        const contenido = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><title>Cotización BelfastCM</title>
+<style>
+  body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:13px;line-height:1.6}
+  h1{color:#1D4ED8;font-size:22px;border-bottom:3px solid #1D4ED8;padding-bottom:10px;margin-bottom:6px}
+  .meta{color:#666;font-size:12px;margin-bottom:24px}
+  h2{color:#1D4ED8;font-size:15px;margin-top:24px;margin-bottom:8px;border-left:4px solid #1D4ED8;padding-left:10px}
+  table{width:100%;border-collapse:collapse;margin:10px 0}
+  th{background:#1D4ED8;color:#fff;padding:8px 10px;text-align:left;font-size:12px}
+  td{padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:12px}
+  tr:nth-child(even) td{background:#f8fafc}
+  .footer{margin-top:40px;padding-top:16px;border-top:2px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}
+  pre{white-space:pre-wrap;font-family:Arial,sans-serif;font-size:12px}
+</style>
+</head>
+<body>
+<h1>Cotización de Obra</h1>
+<div class="meta">
+  <b>BelfastCM × AA2000</b> &nbsp;|&nbsp; Fecha: ${item.fecha} ${item.hora || ''} &nbsp;|&nbsp;
+  Tipología: ${item.tipologia || '—'} &nbsp;|&nbsp; Zona: ${item.zona || 'AMBA'} &nbsp;|&nbsp; Superficie: ${item.superficie || '—'} m²
+</div>
+${item.foto ? `<img src="${item.foto}" style="max-width:100%;max-height:280px;object-fit:contain;border-radius:8px;margin-bottom:20px;border:1px solid #e5e7eb">` : ''}
+<div>${item.texto
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/\|(.+)\|/g, (m) => {
+        const cells = m.split('|').filter(c => c.trim());
+        const isHeader = cells.every(c => /^[-\s]+$/.test(c.trim()));
+        if (isHeader) return '';
+        return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+    })
+    .replace(/(<tr>.*?<\/tr>)/gs, '<table>$1</table>')
+    .replace(/\n/g, '<br>')
+}</div>
+<div class="footer">Generado por BelfastCM × AA2000 — Precios de referencia, consultar con proveedores para cotización final.</div>
+</body></html>`;
+
+        const blob = new Blob([contenido], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `cotizacion_${item.tipologia?.replace(/\s/g, '_')}_${item.fecha.replace(/\//g, '-')}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+        <AppHeader title="Cotización IA" back onBack={() => setView("mas")} sub="Precios Argentina en tiempo real" />
+        <div style={{ padding: "14px 18px" }}>
+            <Card style={{ padding: "16px", marginBottom: 12 }}>
+                <Lbl>Tipo de trabajo</Lbl>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+                    {TIPOLOGIAS.map(t => (
+                        <button key={t.id} onClick={() => setTipologia(t.id)} style={{ padding: "8px 6px", borderRadius: T.rsm, border: `1.5px solid ${tipologia === t.id ? T.accent : T.border}`, background: tipologia === t.id ? T.accentLight : T.card, color: tipologia === t.id ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t.label}</button>
+                    ))}
+                </div>
+                <FieldRow>
+                    <Field label="Superficie (m²)"><TInput value={superficie} onChange={e => setSuperficie(e.target.value)} placeholder="ej: 80" type="number" /></Field>
+                    <Field label="Zona / Localidad"><TInput value={zona} onChange={e => setZona(e.target.value)} placeholder="ej: Palermo" /></Field>
+                </FieldRow>
+                <Lbl>Foto del espacio (opcional pero recomendado)</Lbl>
+                <input ref={camRef} type="file" accept="image/*" capture="environment" onChange={handleFoto} style={{ display: "none" }} />
+                <input ref={galRef} type="file" accept="image/*" onChange={handleFoto} style={{ display: "none" }} />
+                {foto ? (
+                    <div style={{ position: "relative", marginBottom: 14 }}>
+                        <img src={foto.url} alt="" style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: T.rsm, border: `1px solid ${T.border}` }} />
+                        <button onClick={() => setFoto(null)} style={{ position: "absolute", top: 6, right: 6, width: 26, height: 26, borderRadius: "50%", background: "rgba(0,0,0,.6)", border: "none", color: "#fff", fontSize: 13, cursor: "pointer" }}>✕</button>
+                        <div style={{ position: "absolute", bottom: 6, left: 8, background: "rgba(0,0,0,.5)", borderRadius: 6, padding: "2px 8px", fontSize: 10, color: "#fff", fontWeight: 600 }}>IA analizará esta imagen</div>
+                    </div>
+                ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                        <button onClick={() => camRef.current?.click()} style={{ background: "#111", border: "none", borderRadius: T.rsm, padding: "10px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>📷 Tomar foto</button>
+                        <button onClick={() => galRef.current?.click()} style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "10px", color: T.text, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>🖼 Galería</button>
+                    </div>
+                )}
+                <button onClick={cotizar} disabled={loading} style={{ width: "100%", background: loading ? "#94A3B8" : T.accent, border: "none", borderRadius: T.rsm, padding: "14px", fontSize: 14, fontWeight: 800, color: "#fff", cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    {loading ? <><div style={{ width: 18, height: 18, border: "2.5px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin .8s linear infinite" }} />Consultando precios en Argentina…</> : 'Generar cotización con IA'}
+                </button>
+            </Card>
+
+            {resultado && (<Card style={{ padding: "16px", marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: T.text }}>Cotización generada</div>
+                        <div style={{ fontSize: 11, color: T.muted }}>{resultado.fecha} · {resultado.tipologia} · {resultado.zona}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => { try { navigator.clipboard.writeText(resultado.texto); } catch {} }} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 11, color: T.sub, cursor: "pointer", fontWeight: 600 }}>Copiar</button>
+                        <button onClick={() => descargarPDF(resultado)} style={{ background: T.accent, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 11, color: "#fff", cursor: "pointer", fontWeight: 700 }}>⬇ HTML/PDF</button>
+                    </div>
+                </div>
+                <div style={{ background: T.bg, borderRadius: T.rsm, padding: "14px", fontSize: 12, color: T.text, lineHeight: 1.8, whiteSpace: "pre-wrap", maxHeight: 420, overflowY: "auto" }}>{resultado.texto}</div>
+            </Card>)}
+
+            {historial.length > 0 && (<Card style={{ padding: "14px 16px" }}>
+                <Lbl>Historial de cotizaciones ({historial.length})</Lbl>
+                {historial.slice(0, 8).map(h => (
+                    <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: `1px solid ${T.border}` }}>
+                        {h.foto && <img src={h.foto} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{h.tipologia}</div>
+                            <div style={{ fontSize: 10, color: T.muted }}>{h.fecha} · {h.zona} · {h.superficie !== '—' ? h.superficie + 'm²' : ''}</div>
+                        </div>
+                        <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                            <button onClick={() => setResultado(h)} style={{ background: T.accentLight, border: `1px solid ${T.border}`, borderRadius: 7, padding: "4px 8px", fontSize: 10, color: T.accent, cursor: "pointer", fontWeight: 700 }}>Ver</button>
+                            <button onClick={() => descargarPDF(h)} style={{ background: T.accent, border: "none", borderRadius: 7, padding: "4px 8px", fontSize: 10, color: "#fff", cursor: "pointer", fontWeight: 700 }}>PDF</button>
+                        </div>
+                    </div>
+                ))}
+            </Card>)}
+        </div>
+    </div>);
+}
+
+// ── MATERIALES POR ZONA ───────────────────────────────────────────────
+function MaterialesZonaView({ setView, apiKey }) {
+    const [zona, setZona] = useState('');
+    const [material, setMaterial] = useState('');
+    const [categoria, setCategoria] = useState('todos');
+    const [loading, setLoading] = useState(false);
+    const [resultado, setResultado] = useState(null);
+
+    const CATEGORIAS = [
+        { id: 'todos', label: 'Todo' },
+        { id: 'cemento', label: 'Cemento y hormigón' },
+        { id: 'hierro', label: 'Hierro y acero' },
+        { id: 'ceramica', label: 'Cerámica y pisos' },
+        { id: 'pintura', label: 'Pinturas' },
+        { id: 'sanitarios', label: 'Sanitarios' },
+        { id: 'electrico', label: 'Eléctrico' },
+        { id: 'madera', label: 'Maderas' },
+        { id: 'aislacion', label: 'Aislación' },
+    ];
+
+    async function buscar() {
+        if (!zona.trim() && !material.trim()) { alert('Ingresá una zona o un material a buscar'); return; }
+        if (!apiKey) { alert('Configurá tu API Key en Más → Configuración'); return; }
+        setLoading(true); setResultado(null);
+        const hoy = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        const prompt = `Sos un experto en el mercado de materiales de construcción en Argentina. Hoy es ${hoy}.
+
+Zona/Localidad buscada: ${zona || 'Buenos Aires / AMBA'}
+${material ? `Material específico: ${material}` : `Categoría: ${CATEGORIAS.find(c => c.id === categoria)?.label || 'General'}`}
+
+Generá un informe actualizado con:
+
+## PRECIOS DE MATERIALES — ${zona || 'AMBA'} — ${hoy}
+
+Para cada material relevante en la categoría indicada:
+- Precio actual en pesos argentinos
+- Fuente de referencia (MercadoLibre, Sodimac, Easy, Ferreterías locales, Revista Cifras, etc.)
+- Variación estimada respecto al mes anterior
+- Formato: | Material | Marca/Calidad | Precio | Unidad | Fuente |
+
+## PROVEEDORES POR ZONA
+
+Lista de proveedores/ferreterías recomendados en ${zona || 'Buenos Aires y alrededores'}:
+- Nombre del proveedor
+- Especialidad
+- Contacto o página web si disponible
+- Por qué es recomendable
+
+## TIPS DE COMPRA
+
+Consejos específicos para comprar en ${zona || 'AMBA'}:
+- Dónde conseguir mejor precio
+- Diferencia barrio/zona de precios
+- Materiales con alta inflación últimos 30 días
+- Sustitutos más económicos si aplica
+
+## ÍNDICE DE PRECIOS REFERENCIAL
+
+Ranking de los 10 materiales más consultados en Argentina con sus precios al ${hoy}.
+
+Todos los precios en PESOS ARGENTINOS ($). Indicá siempre la fuente.`;
+
+        const r = await callAI([{ role: 'user', content: prompt }],
+            `Sos un asistente experto en costos de construcción en Argentina. Tenés acceso a información de mercado actualizada de MercadoLibre, Sodimac, Easy, Ferreterías y publicaciones especializadas como Revista Cifras. Respondés siempre en español rioplatense con precios reales y actualizados.`,
+            apiKey);
+        setResultado({ texto: r, zona: zona || 'AMBA', material, categoria, fecha: new Date().toLocaleDateString('es-AR') });
+        setLoading(false);
+    }
+
+    return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+        <AppHeader title="Materiales por zona" back onBack={() => setView("mas")} sub="Precios y proveedores en Argentina" />
+        <div style={{ padding: "14px 18px" }}>
+            <Card style={{ padding: "16px", marginBottom: 12 }}>
+                <Field label="Zona / Localidad">
+                    <TInput value={zona} onChange={e => setZona(e.target.value)} placeholder="ej: Palermo, Belgrano, La Plata, Rosario..." />
+                </Field>
+                <Field label="Material específico (opcional)">
+                    <TInput value={material} onChange={e => setMaterial(e.target.value)} placeholder="ej: cemento portland, porcellanato 60x60..." />
+                </Field>
+                <Lbl>Categoría</Lbl>
+                <div style={{ display: "flex", gap: 5, overflowX: "auto", paddingBottom: 4, marginBottom: 14 }}>
+                    {CATEGORIAS.map(c => (
+                        <button key={c.id} onClick={() => setCategoria(c.id)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${categoria === c.id ? T.accent : T.border}`, background: categoria === c.id ? T.accentLight : T.card, color: categoria === c.id ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{c.label}</button>
+                    ))}
+                </div>
+                <button onClick={buscar} disabled={loading} style={{ width: "100%", background: loading ? "#94A3B8" : T.accent, border: "none", borderRadius: T.rsm, padding: "14px", fontSize: 14, fontWeight: 800, color: "#fff", cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    {loading ? <><div style={{ width: 18, height: 18, border: "2.5px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin .8s linear infinite" }} />Buscando precios y proveedores…</> : 'Buscar precios y proveedores'}
+                </button>
+            </Card>
+
+            {resultado && (<Card style={{ padding: "16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: T.text }}>Resultados para {resultado.zona}</div>
+                        <div style={{ fontSize: 11, color: T.muted }}>{resultado.fecha} · {resultado.material || CATEGORIAS.find(c => c.id === resultado.categoria)?.label}</div>
+                    </div>
+                    <button onClick={() => { try { navigator.clipboard.writeText(resultado.texto); } catch {} }} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 11, color: T.sub, cursor: "pointer", fontWeight: 600 }}>Copiar</button>
+                </div>
+                <div style={{ background: T.bg, borderRadius: T.rsm, padding: "14px", fontSize: 12, color: T.text, lineHeight: 1.8, whiteSpace: "pre-wrap", maxHeight: 500, overflowY: "auto" }}>{resultado.texto}</div>
+            </Card>)}
+
+            {!resultado && !loading && (<div style={{ textAlign: "center", padding: "40px 0" }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 6 }}>Buscador de precios</div>
+                <div style={{ fontSize: 12, color: T.muted, maxWidth: 280, margin: "0 auto", lineHeight: 1.6 }}>
+                    Ingresá una zona y la IA busca precios actualizados de MercadoLibre, Sodimac, Easy, Revista Cifras y proveedores locales.
+                </div>
+            </div>)}
+        </div>
+    </div>);
+}
+
 // ── MENSAJES · CONTACTOS · WHATSAPP ─────────────────────────────────
 function MensajesView({ setView, currentUser, personal }) {
     const [mensajes, setMensajes] = useState([]);
@@ -2295,6 +2840,8 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
         { id: 'archivos', label: 'Archivos', color: '#475569', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19.5 21a3 3 0 003-3v-4.5a3 3 0 00-3-3h-15a3 3 0 00-3 3V18a3 3 0 003 3h15zM1.5 10.146V6a3 3 0 013-3h5.379a2.25 2.25 0 011.59.659l2.122 2.121c.14.141.331.22.53.22H19.5a3 3 0 013 3v1.146A4.483 4.483 0 0019.5 9h-15a4.483 4.483 0 00-3 1.146z" /></svg> },
         { id: 'info_externa', label: 'Info externa', color: '#2563EB', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M11.47 3.84a.75.75 0 011.06 0l8.69 8.69a.75.75 0 101.06-1.061l-8.689-8.69a2.25 2.25 0 00-3.182 0l-8.69 8.69a.75.75 0 001.061 1.061l8.69-8.69z" /><path d="M12 5.432l8.159 8.159c.03.03.06.058.091.086v6.198c0 1.035-.84 1.875-1.875 1.875H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75.75V21a.75.75 0 01-.75.75H5.625a1.875 1.875 0 01-1.875-1.875v-6.198a2.29 2.29 0 00.091-.086L12 5.432z" /></svg> },
         { id: 'resumen', label: 'Resumen', color: '#059669', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M2.25 13.5a8.25 8.25 0 018.25-8.25.75.75 0 01.75.75v6.75H18a.75.75 0 01.75.75 8.25 8.25 0 01-16.5 0z" /><path fillRule="evenodd" clipRule="evenodd" d="M12.75 3a.75.75 0 01.75-.75 8.25 8.25 0 018.25 8.25.75.75 0 01-.75.75h-7.5a.75.75 0 01-.75-.75V3z" /></svg> },
+        { id: 'cotizacion', label: 'Cotización', color: '#0EA5E9', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM9 7.5A.75.75 0 009 9h1.5c.98 0 1.813.626 2.122 1.5H9A.75.75 0 009 12h3.622a2.251 2.251 0 01-2.122 1.5H9a.75.75 0 00-.53 1.28l3 3a.75.75 0 101.06-1.06l-1.7-1.7A3.75 3.75 0 0014.78 12H15a.75.75 0 000-1.5h-.22A3.75 3.75 0 0012.78 9H15a.75.75 0 000-1.5H9z" /></svg> },
+        { id: 'materiales_zona', label: 'Materiales', color: '#7C3AED', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.375 4.5C2.339 4.5 1.5 5.34 1.5 6.375V13.5h12V6.375c0-1.036-.84-1.875-1.875-1.875h-8.25zM13.5 15h-12v2.625c0 1.035.84 1.875 1.875 1.875h.375a3 3 0 116 0h3a.75.75 0 00.75-.75V15z" /><path d="M8.25 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0zM15.75 6.75a.75.75 0 00-.75.75v11.25c0 .087.015.17.042.248a3 3 0 015.958.464c.853-.175 1.522-.935 1.464-1.883a18.659 18.659 0 00-3.732-10.104 1.837 1.837 0 00-1.47-.725H15.75z" /><path d="M19.5 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z" /></svg> },
     ];
 
     function updCfg(patch) { setCfg(p => ({ ...p, ...patch })); }
@@ -2779,6 +3326,8 @@ function AppInner() {
                 {view === 'vigilancia' && <PanelVigilancia setView={setView} />}
                 {view === 'presentismo' && <Presentismo personal={personal} setPersonal={setPersonal} obras={obras} setObras={setObras} currentUser={user} setView={setView} />}
                 {view === 'resumen' && <ResumenView lics={lics} obras={obras} personal={personal} alerts={alerts} setView={setView} />}
+                {view === 'cotizacion' && <CotizacionView setView={setView} apiKey={apiKey} cfg={cfg} />}
+                {view === 'materiales_zona' && <MaterialesZonaView setView={setView} apiKey={apiKey} />}
                 {view === 'mensajes' && <MensajesView setView={setView} currentUser={user} personal={personal} />}
                 {view === 'contactos' && <ContactosView setView={setView} />}
                 {view === 'proveedores' && <ProveedoresView setView={setView} />}
