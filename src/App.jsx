@@ -344,7 +344,37 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
             </div>
         </div>
         <div style={{ padding: "14px 18px" }}>
-            {alerts.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12, fontWeight: 700, color: T.sub, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>⚠ {t(cfg, 'dash_alertas')}</div>{alerts.slice(0, 3).map(a => (<div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, background: a.prioridad === "alta" ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${a.prioridad === "alta" ? "#FECACA" : "#FDE68A"}`, borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: a.prioridad === "alta" ? "#EF4444" : "#F59E0B", flexShrink: 0 }} /><div style={{ fontSize: 12, color: T.text, lineHeight: 1.4, flex: 1 }}>{a.msg}</div></div>))}</div>}
+            {alerts.length > 0 && (<div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em" }}>Alertas ({alerts.length})</div>
+                    <button onClick={() => setView("seguimiento")} style={{ fontSize: 12, color: T.accent, background: "none", border: "none", fontWeight: 600, cursor: "pointer" }}>Ver todas →</button>
+                </div>
+                {/* Alertas de alta prioridad primero */}
+                {alerts.filter(a => a.prioridad === 'alta').slice(0, 5).map(a => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
+                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#EF4444", flexShrink: 0, marginTop: 4 }} />
+                        <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5, flex: 1 }}>{a.msg}</div>
+                    </div>
+                ))}
+                {/* Alertas medias (máx 4) */}
+                {alerts.filter(a => a.prioridad === 'media').slice(0, 4).map(a => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
+                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0, marginTop: 4 }} />
+                        <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5, flex: 1 }}>{a.msg}</div>
+                    </div>
+                ))}
+                {alerts.filter(a => a.prioridad === 'media').length > 4 && (
+                    <button onClick={() => setView("seguimiento")} style={{ width: "100%", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "8px", fontSize: 12, color: "#92400E", fontWeight: 600, cursor: "pointer", textAlign: "center" }}>
+                        + {alerts.filter(a => a.prioridad === 'media').length - 4} alertas más → Ver seguimiento
+                    </button>
+                )}
+            </div>)}
+            {alerts.length === 0 && (
+                <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 10, padding: "12px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#10B981", flexShrink: 0 }} />
+                    <div style={{ fontSize: 12, color: "#15803D", fontWeight: 600 }}>✓ Todo en orden — sin alertas activas</div>
+                </div>
+            )}
             <div style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t(cfg, 'dash_obras_curso')}</div>
@@ -2044,9 +2074,17 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
         const isImage = f.type.startsWith('image/');
         const nuevoAttach = { url, name: f.name, type: f.type, isImage, size: f.size };
         setAttach(nuevoAttach);
-        // Ofrecer guardar
-        setShowSaveDialog(nuevoAttach);
+        // Si es imagen, adjuntarla al chat para análisis IA (no abrir el diálogo de guardar todavía)
+        // El usuario puede tocar "Guardar" desde el preview del adjunto
+        if (!isImage) setShowSaveDialog(nuevoAttach);
         e.target.value = '';
+    }
+
+    async function analizarFotoAhora(att) {
+        // Envía la foto al chat con un mensaje de análisis automático
+        setInput('Analizá esta imagen y describí qué ves. Si es de una obra de construcción, identificá trabajos, estado, avance estimado y cualquier observación relevante.');
+        setAttach(att);
+        setTimeout(() => enviar(), 80);
     }
 
     async function guardarEnObra(att, obraId) {
@@ -2144,13 +2182,33 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
                 </div>}
             </div>)}
         </div>
-        {attach && <div style={{ padding: "0 14px", marginBottom: 8 }}>
-            <div style={{ display: "inline-flex", gap: 8, alignItems: "center", background: T.accentLight, border: `1px solid ${T.accent}`, borderRadius: 10, padding: "5px 10px" }}>
-                {attach.isImage ? <img src={attach.url} alt="" style={{ width: 30, height: 30, objectFit: "cover", borderRadius: 6 }} /> : <div style={{ width: 30, height: 30, borderRadius: 6, background: T.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700 }}>{attach.name.split('.').pop().toUpperCase().slice(0,4)}</div>}
-                <span style={{ fontSize: 11, color: T.accent, fontWeight: 600, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attach.name}</span>
-                <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.accent, border: "none", color: "#fff", cursor: "pointer", fontSize: 10, fontWeight: 700, borderRadius: 6, padding: "3px 8px" }}>💾 Guardar</button>
-                <button onClick={() => setAttach(null)} style={{ background: "none", border: "none", color: T.accent, cursor: "pointer", fontSize: 14, padding: 2 }}>✕</button>
-            </div>
+        {attach && <div style={{ padding: "6px 14px 0" }}>
+            {attach.isImage ? (
+                // Imagen: mostrar preview grande con botones Analizar y Guardar
+                <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px", display: "flex", gap: 10, alignItems: "center" }}>
+                    <img src={attach.url} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8, flexShrink: 0, border: `1px solid ${T.border}` }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 6 }}>{attach.name}</div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                            <button onClick={() => analizarFotoAhora(attach)} style={{ flex: 1, background: T.accent, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
+                                Analizar con IA
+                            </button>
+                            <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 600, color: T.sub, cursor: "pointer" }}>
+                                Guardar
+                            </button>
+                            <button onClick={() => setAttach(null)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                // Archivo: preview compacto
+                <div style={{ display: "inline-flex", gap: 8, alignItems: "center", background: T.accentLight, border: `1px solid ${T.accent}`, borderRadius: 10, padding: "5px 10px" }}>
+                    <div style={{ width: 30, height: 30, borderRadius: 6, background: T.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700 }}>{attach.name.split('.').pop().toUpperCase().slice(0,4)}</div>
+                    <span style={{ fontSize: 11, color: T.accent, fontWeight: 600, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attach.name}</span>
+                    <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.accent, border: "none", color: "#fff", cursor: "pointer", fontSize: 10, fontWeight: 700, borderRadius: 6, padding: "3px 8px" }}>Guardar</button>
+                    <button onClick={() => setAttach(null)} style={{ background: "none", border: "none", color: T.accent, cursor: "pointer", fontSize: 14, padding: 2 }}>✕</button>
+                </div>
+            )}
         </div>}
         <div style={{ padding: "8px 10px", background: T.card, borderTop: `1px solid ${T.border}`, display: "flex", gap: 6, alignItems: "center", position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99 }}>
             <input ref={camRef} type="file" accept="image/*" capture="environment" onChange={handleAttach} style={{ display: "none" }} />
@@ -2510,7 +2568,7 @@ function AppInner() {
     function getLocalStr(k, def = '') { try { return localStorage.getItem(k) || def; } catch { return def; } }
 
     const [user, setUser] = useState(() => getLocalJSON('bcm_current_user', null));
-    const [view, setView] = useState('dashboard');
+    const [view, setView] = useState('chat');
     const [detailObraId, setDetailObraId] = useState(null);
     const [lics, setLics] = useState(() => getLocalJSON('bcm_lics', []));
     const [obras, setObras] = useState(() => getLocalJSON('bcm_obras', []));
@@ -2602,26 +2660,77 @@ function AppInner() {
     // Generar alertas automáticas
     useEffect(() => {
         const out = [];
-        // Documentos vencidos o por vencer
+        const hoy = new Date(); hoy.setHours(0,0,0,0);
+
+        // 1. Documentos vencidos o por vencer (con fecha cargada)
         personal.forEach(p => {
             Object.entries(p.docs || {}).forEach(([did, doc]) => {
                 if (doc?.vence) {
                     const d = daysSince(doc.vence);
                     const docLabel = DOC_TYPES.find(x => x.id === did)?.label || did;
-                    if (d < 0) out.push({ id: `doc_${p.id}_${did}`, msg: `${p.nombre}: ${docLabel} vencido hace ${Math.abs(d)} días`, prioridad: 'alta' });
-                    else if (d <= 7) out.push({ id: `doc_${p.id}_${did}`, msg: `${p.nombre}: ${docLabel} vence en ${d} días`, prioridad: 'media' });
+                    if (d < 0) out.push({ id: `doc_${p.id}_${did}`, msg: `📄 ${p.nombre}: ${docLabel} vencido hace ${Math.abs(d)} día${Math.abs(d) !== 1 ? 's' : ''}`, prioridad: 'alta' });
+                    else if (d <= 14) out.push({ id: `doc_${p.id}_${did}`, msg: `📄 ${p.nombre}: ${docLabel} vence en ${d} día${d !== 1 ? 's' : ''}`, prioridad: d <= 3 ? 'alta' : 'media' });
+                }
+            });
+            // 2. Documentos obligatorios sin cargar
+            DOC_TYPES.forEach(dt => {
+                const doc = p.docs?.[dt.id];
+                if (!doc) {
+                    out.push({ id: `docfalta_${p.id}_${dt.id}`, msg: `📋 ${p.nombre}: le falta cargar ${dt.label}`, prioridad: 'media' });
                 }
             });
         });
-        // Obras con alto % pagado
+
+        // 3. Obras con alto % pagado vs avance
         obras.forEach(o => {
             const lic = lics.find(l => l.id === o.lic_id);
             const presup = parseMontoNum(lic?.monto || o.monto);
             const pagado = parseMontoNum(o.pagado || 0);
             if (presup > 0 && pagado / presup > 0.9 && o.avance < 90) {
-                out.push({ id: `pag_${o.id}`, msg: `${o.nombre}: ${Math.round(pagado / presup * 100)}% pagado pero solo ${o.avance}% de avance`, prioridad: 'alta' });
+                out.push({ id: `pag_${o.id}`, msg: `💰 ${o.nombre}: ${Math.round(pagado / presup * 100)}% pagado pero solo ${o.avance}% de avance`, prioridad: 'alta' });
             }
         });
+
+        // 4. Licitaciones en estado "visitar" (pendientes de visita)
+        lics.filter(l => l.estado === 'visitar').forEach(l => {
+            out.push({ id: `lic_visitar_${l.id}`, msg: `🏗 Licitación pendiente de visita: "${l.nombre}"`, prioridad: 'media' });
+        });
+
+        // 5. Licitaciones en estado "presupuesto" con fecha límite pasada o próxima
+        lics.filter(l => l.estado === 'presupuesto' && l.fecha).forEach(l => {
+            try {
+                const partes = l.fecha.split('/');
+                if (partes.length === 3) {
+                    const año = partes[2].length === 2 ? '20' + partes[2] : partes[2];
+                    const fechaLic = new Date(parseInt(año), parseInt(partes[1]) - 1, parseInt(partes[0]));
+                    fechaLic.setHours(0,0,0,0);
+                    const diffDias = Math.ceil((fechaLic - hoy) / (1000 * 60 * 60 * 24));
+                    if (diffDias < 0) {
+                        out.push({ id: `lic_atrasada_${l.id}`, msg: `⚠ Presentación atrasada hace ${Math.abs(diffDias)} día${Math.abs(diffDias) !== 1 ? 's' : ''}: "${l.nombre}"`, prioridad: 'alta' });
+                    } else if (diffDias <= 5) {
+                        out.push({ id: `lic_proxima_${l.id}`, msg: `⏰ Presentación en ${diffDias} día${diffDias !== 1 ? 's' : ''}: "${l.nombre}"`, prioridad: 'alta' });
+                    } else if (diffDias <= 14) {
+                        out.push({ id: `lic_proxima_${l.id}`, msg: `📅 Presentación en ${diffDias} días: "${l.nombre}"`, prioridad: 'media' });
+                    }
+                }
+            } catch { }
+        });
+
+        // 6. Licitaciones presentadas sin novedad (más de 30 días)
+        lics.filter(l => l.estado === 'presentada' && l.fecha).forEach(l => {
+            try {
+                const partes = l.fecha.split('/');
+                if (partes.length === 3) {
+                    const año = partes[2].length === 2 ? '20' + partes[2] : partes[2];
+                    const fechaLic = new Date(parseInt(año), parseInt(partes[1]) - 1, parseInt(partes[0]));
+                    const diffDias = Math.ceil((hoy - fechaLic) / (1000 * 60 * 60 * 24));
+                    if (diffDias > 30) {
+                        out.push({ id: `lic_sin_novedad_${l.id}`, msg: `🔍 Sin novedad hace ${diffDias} días: "${l.nombre}" (presentada)`, prioridad: 'media' });
+                    }
+                }
+            } catch { }
+        });
+
         setAlerts(out);
     }, [personal, obras, lics]);
 
