@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import React, { useState, useRef, useEffect, useCallback, memo } from "react";
 
 // ── SUPABASE CONFIG ─────────────────────────────────────────────
 const SUPA_URL = "https://mvrznqpvreeskbmbaclg.supabase.co";
@@ -2437,7 +2437,38 @@ function LoginScreen({ onLogin, cfg, personal }) {
 // ═══════════════════════════════════════════════════════════════════════
 // ── APP PRINCIPAL ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-export default function App() {
+
+// Error boundary: si algo falla, muestra el error en lugar de pantalla blanca
+class ErrorBoundary extends React.Component {
+    constructor(props) { super(props); this.state = { hasError: false, error: null, info: null }; }
+    static getDerivedStateFromError(error) { return { hasError: true, error }; }
+    componentDidCatch(error, info) { console.error('[BelfastCM Error]', error, info); this.setState({ info }); }
+    render() {
+        if (this.state.hasError) {
+            return (<div style={{ minHeight: "100vh", padding: "30px 20px", background: "#FEF2F2", fontFamily: "-apple-system, sans-serif", color: "#7F1D1D" }}>
+                <div style={{ maxWidth: 600, margin: "0 auto", background: "#fff", borderRadius: 14, padding: "24px", border: "2px solid #FECACA" }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8, color: "#B91C1C" }}>⚠ Error en la app</div>
+                    <div style={{ fontSize: 13, color: "#7F1D1D", marginBottom: 16, lineHeight: 1.6 }}>La app encontró un error y no puede continuar. Mandale esta pantalla al desarrollador:</div>
+                    <div style={{ background: "#FEF2F2", borderRadius: 8, padding: "12px 14px", fontFamily: "monospace", fontSize: 11, color: "#991B1B", marginBottom: 14, wordBreak: "break-word", whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto", border: "1px solid #FECACA" }}>
+                        <b>{this.state.error?.name || 'Error'}:</b> {this.state.error?.message || 'sin detalle'}
+                        {this.state.error?.stack && <div style={{ marginTop: 10, opacity: .7, fontSize: 10 }}>{String(this.state.error.stack).split('\n').slice(0, 5).join('\n')}</div>}
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                        <button onClick={() => { try { localStorage.clear(); } catch { } location.reload(); }} style={{ flex: 1, background: "#B91C1C", color: "#fff", border: "none", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                            Borrar caché y reiniciar
+                        </button>
+                        <button onClick={() => location.reload()} style={{ flex: 1, background: "#fff", color: "#B91C1C", border: "1.5px solid #FECACA", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                            Recargar
+                        </button>
+                    </div>
+                </div>
+            </div>);
+        }
+        return this.props.children;
+    }
+}
+
+function AppInner() {
     // Helpers de carga sincrónica desde localStorage (evita el "flash" y que se pisen con valores vacíos)
     function getLocalJSON(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch { return def; } }
     function getLocalStr(k, def = '') { try { return localStorage.getItem(k) || def; } catch { return def; } }
@@ -2614,4 +2645,9 @@ export default function App() {
             {authRequest && <LoginModal titulo={authRequest.context || "Acceso requerido"} onSuccess={handleAuthSuccess} onClose={() => setAuthRequest(null)} />}
         </div>
     </>);
+}
+
+// Wrapper con ErrorBoundary para evitar pantallas blancas
+export default function App() {
+    return <ErrorBoundary><AppInner /></ErrorBoundary>;
 }
