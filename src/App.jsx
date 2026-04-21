@@ -374,9 +374,14 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
     const [ap, setAp] = useState("todos");
     const [showNew, setShowNew] = useState(false);
     const [showDetail, setShowDetail] = useState(null);
-    const [form, setForm] = useState({ nombre: "", ap: "aep", estado: "visitar", monto: "", fecha: "", sector: "", docs: {} });
+    const [form, setForm] = useState({ nombre: "", ap: "", estado: "visitar", monto: "", fecha: "", sector: "", docs: {} });
     const docRefs = useRef({}); const newDocRefs = useRef({});
     const filtered = lics.filter(l => ap === "todos" || l.ap === ap);
+
+    // Asegurar que form.ap tenga un valor válido cuando cambien las UBICS
+    useEffect(() => {
+        if (!form.ap && UBICS.length > 0) setForm(f => ({ ...f, ap: UBICS[0].id }));
+    }, [UBICS.length]);
 
     function autoCrearObra(lic) {
         const yaExiste = obras.some(o => o.lic_id === lic.id);
@@ -397,7 +402,13 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
             return { ...l, estado: nuevoEstado };
         }));
     }
-    function add() { if (!form.nombre.trim()) return; setLics(p => [...p, { ...form, id: uid() }]); setForm({ nombre: "", ap: "aep", estado: "visitar", monto: "", fecha: "", sector: "", docs: {} }); setShowNew(false); }
+    function add() {
+        if (!form.nombre.trim()) return;
+        const apFinal = form.ap || UBICS[0]?.id || 'aep';
+        setLics(p => [...p, { ...form, ap: apFinal, id: uid() }]);
+        setForm({ nombre: "", ap: UBICS[0]?.id || '', estado: "visitar", monto: "", fecha: "", sector: "", docs: {} });
+        setShowNew(false);
+    }
     function del(id) { setLics(p => p.filter(l => l.id !== id)); setShowDetail(null); }
     async function handleDoc(licId, did, file) { const url = await toDataUrl(file); setLics(p => p.map(l => l.id === licId ? { ...l, docs: { ...(l.docs || {}), [did]: { nombre: file.name, url } } } : l)); }
     async function handleNewDoc(did, file) { const url = await toDataUrl(file); setForm(f => ({ ...f, docs: { ...(f.docs || {}), [did]: { nombre: file.name, url } } })); }
@@ -405,7 +416,12 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
 
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <AppHeader title="Licitaciones" sub={`${filtered.length} registros`} right={<PlusBtn onClick={() => requireAuth(() => setShowNew(true), "Nueva licitación")} />} />
-        <div style={{ padding: "10px 18px", display: "flex", gap: 6, overflowX: "auto" }}>{[{ id: "todos", label: "Todos" }, ...AIRPORTS.map(a => ({ id: a.id, label: a.code }))].map(f => (<button key={f.id} onClick={() => setAp(f.id)} style={{ flexShrink: 0, padding: "6px 14px", borderRadius: 20, border: `1.5px solid ${ap === f.id ? "var(--accent,#1D4ED8)" : T.border}`, background: ap === f.id ? T.accentLight : T.card, color: ap === f.id ? T.accent : T.sub, fontSize: 12, fontWeight: 600 }}>{f.label}</button>))}</div>
+        {/* Filtros por ubicación — usa UBICS configuradas */}
+        <div style={{ padding: "10px 18px", display: "flex", gap: 6, overflowX: "auto" }}>
+            {[{ id: "todos", label: "Todos" }, ...UBICS.map(a => ({ id: a.id, label: a.code }))].map(f => (
+                <button key={f.id} onClick={() => setAp(f.id)} style={{ flexShrink: 0, padding: "6px 14px", borderRadius: 20, border: `1.5px solid ${ap === f.id ? "var(--accent,#1D4ED8)" : T.border}`, background: ap === f.id ? T.accentLight : T.card, color: ap === f.id ? T.accent : T.sub, fontSize: 12, fontWeight: 600 }}>{f.label}</button>
+            ))}
+        </div>
         <div style={{ padding: "0 18px" }}>
             {LIC_ESTADOS.map(est => {
                 const items = filtered.filter(l => l.estado === est.id);
@@ -414,11 +430,12 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: est.color }} /><span style={{ fontSize: 11, fontWeight: 700, color: est.color, textTransform: "uppercase", letterSpacing: "0.06em" }}>{est.label}</span><span style={{ fontSize: 11, color: T.muted }}>({items.length})</span></div>
                     {items.map(lic => {
                         const obraVinc = obras.find(o => o.lic_id === lic.id);
+                        const ubicLabel = UBICS.find(a => a.id === lic.ap)?.code || lic.ap || '—';
                         return (<Card key={lic.id} onClick={() => setShowDetail(lic.id)} style={{ padding: "13px 14px", marginBottom: 7, cursor: "pointer" }}>
                             <div style={{ display: "flex", justifyContent: "space-between" }}>
                                 <div style={{ flex: 1, paddingRight: 8 }}>
                                     <div style={{ fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 3, display: "flex", alignItems: "center", gap: 6 }}>{lic.nombre}{obraVinc && <span style={{ fontSize: 9, fontWeight: 700, background: "#ECFDF5", color: "#10B981", border: "1px solid #86EFAC", borderRadius: 20, padding: "1px 6px" }}>🏗 EN OBRA</span>}</div>
-                                    <div style={{ fontSize: 11, color: T.muted }}>{AIRPORTS.find(a => a.id === lic.ap)?.code}{lic.sector ? ` · ${lic.sector}` : ""}</div>
+                                    <div style={{ fontSize: 11, color: T.muted }}>{ubicLabel}{lic.sector ? ` · ${lic.sector}` : ""}</div>
                                 </div>
                                 <div style={{ textAlign: "right", flexShrink: 0 }}>
                                     <div style={{ fontSize: 12, fontWeight: 700, color: T.accent }}>{lic.monto}</div>
@@ -433,7 +450,11 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
         {showNew && (<Sheet title="Nueva licitación" onClose={() => setShowNew(false)}>
             <Field label="Nombre"><TInput value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} placeholder="Ej: Refacción Terminal B" /></Field>
             <FieldRow>
-                <Field label="Aeropuerto"><Sel value={form.ap} onChange={e => setForm(p => ({ ...p, ap: e.target.value }))}>{AIRPORTS.map(a => <option key={a.id} value={a.id}>{a.code}</option>)}</Sel></Field>
+                <Field label={getLabelUbic(cfg)}>
+                    <Sel value={form.ap || UBICS[0]?.id || ''} onChange={e => setForm(p => ({ ...p, ap: e.target.value }))}>
+                        {UBICS.map(a => <option key={a.id} value={a.id}>{a.code} – {a.name}</option>)}
+                    </Sel>
+                </Field>
                 <Field label="Estado"><Sel value={form.estado} onChange={e => setForm(p => ({ ...p, estado: e.target.value }))}>{LIC_ESTADOS.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</Sel></Field>
             </FieldRow>
             <FieldRow>
@@ -447,7 +468,11 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
         {detail && (<Sheet title={detail.nombre} onClose={() => setShowDetail(null)}>
             <Field label="Nombre"><TInput value={detail.nombre} onChange={e => setLics(p => p.map(l => l.id === detail.id ? { ...l, nombre: e.target.value } : l))} placeholder="Nombre de la licitación" /></Field>
             <FieldRow>
-                <Field label="Aeropuerto"><Sel value={detail.ap} onChange={e => setLics(p => p.map(l => l.id === detail.id ? { ...l, ap: e.target.value } : l))}>{AIRPORTS.map(a => <option key={a.id} value={a.id}>{a.code} – {a.name}</option>)}</Sel></Field>
+                <Field label={getLabelUbic(cfg)}>
+                    <Sel value={detail.ap} onChange={e => setLics(p => p.map(l => l.id === detail.id ? { ...l, ap: e.target.value } : l))}>
+                        {UBICS.map(a => <option key={a.id} value={a.id}>{a.code} – {a.name}</option>)}
+                    </Sel>
+                </Field>
                 <Field label="Monto"><MontoInput value={detail.monto || ''} onChange={v => setLics(p => p.map(l => l.id === detail.id ? { ...l, monto: v } : l))} placeholder="0 $" /></Field>
             </FieldRow>
             <FieldRow>
@@ -2221,9 +2246,18 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
         updCfg({ themeId: id, colors: { accent: p.accent, al: p.al, bg: p.bg, card: p.card, border: p.border, text: p.text, sub: p.sub, muted: p.muted, navy: p.navy } });
     }
     async function handleLogoUpload(key, file) { const url = await toDataUrl(file); updCfg({ [key]: url }); }
-    function agregarUbicacion() { updCfg({ ubicaciones: [...getUbics(cfg), { id: uid(), code: 'NUEVO', name: 'Nueva ubicación' }] }); }
-    function updUbic(id, patch) { updCfg({ ubicaciones: getUbics(cfg).map(u => u.id === id ? { ...u, ...patch } : u) }); }
-    function delUbic(id) { updCfg({ ubicaciones: getUbics(cfg).filter(u => u.id !== id) }); }
+    function agregarUbicacion() {
+        const actuales = cfg.ubicaciones?.length ? cfg.ubicaciones : [...DEFAULT_UBICACIONES];
+        updCfg({ ubicaciones: [...actuales, { id: uid(), code: 'NUEVO', name: 'Nueva ubicación' }] });
+    }
+    function updUbic(id, patch) {
+        const actuales = cfg.ubicaciones?.length ? cfg.ubicaciones : [...DEFAULT_UBICACIONES];
+        updCfg({ ubicaciones: actuales.map(u => u.id === id ? { ...u, ...patch } : u) });
+    }
+    function delUbic(id) {
+        const actuales = cfg.ubicaciones?.length ? cfg.ubicaciones : [...DEFAULT_UBICACIONES];
+        updCfg({ ubicaciones: actuales.filter(u => u.id !== id) });
+    }
     function restaurarTema() { updCfg({ themeId: 'azul', colors: { ...DEFAULT_COLORS }, fontId: 'jakarta', radiusId: 'normal' }); }
 
     function logout() {
@@ -2338,12 +2372,14 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
             {cfgSection === 'ubic' && (<div>
                 <Field label="Etiqueta del campo (ej: Aeropuerto, Sucursal, Obra)"><TInput value={cfg.labelUbicacion || 'Aeropuerto'} onChange={e => updCfg({ labelUbicacion: e.target.value })} /></Field>
                 <Lbl>Ubicaciones</Lbl>
-                {getUbics(cfg).map(u => (<div key={u.id} style={{ display: "grid", gridTemplateColumns: "60px 1fr 34px", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                {(cfg.ubicaciones?.length ? cfg.ubicaciones : DEFAULT_UBICACIONES).map(u => (<div key={u.id} style={{ display: "grid", gridTemplateColumns: "60px 1fr 34px", gap: 6, marginBottom: 6, alignItems: "center" }}>
                     <input value={u.code} onChange={e => updUbic(u.id, { code: e.target.value })} placeholder="Cód" style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, color: T.text, textTransform: "uppercase" }} />
                     <input value={u.name} onChange={e => updUbic(u.id, { name: e.target.value })} placeholder="Nombre" style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, color: T.text }} />
-                    <button onClick={() => delUbic(u.id)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
+                    <button onClick={() => delUbic(u.id)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
                 </div>))}
-                <button onClick={agregarUbicacion} style={{ width: "100%", marginTop: 8, background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: T.rsm, padding: "10px", fontSize: 12, fontWeight: 600, color: T.sub, cursor: "pointer" }}>+ Agregar ubicación</button>
+                <button onClick={agregarUbicacion} style={{ width: "100%", marginTop: 8, background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: T.rsm, padding: "12px", fontSize: 13, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                    <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Agregar ubicación
+                </button>
             </div>)}
 
             {cfgSection === 'api' && (<div>
