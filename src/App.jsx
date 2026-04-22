@@ -6,31 +6,45 @@ const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 const SH = () => ({ "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY });
 
 // Storage adapter: Supabase (cloud) con fallback a localStorage
+// ── STORAGE ROBUSTO ────────────────────────────────────────────────────
+// Principio: localStorage es la fuente de verdad local (síncrona, instantánea).
+// Supabase es la nube (asíncrona, para sincronización entre dispositivos).
+// NUNCA se pisa un dato nuevo con uno viejo del servidor.
+
 const storage = {
-    get: async (key) => {
-        try {
-            const r = await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key) + "&select=value&limit=1", {
-                method: "GET",
-                headers: SH(),
-                mode: "cors"
-            });
-            if (r.ok) { const d = await r.json(); if (d && d.length > 0) return { value: d[0].value }; }
-        } catch (e) { console.log("Supabase get error:", e); }
-        try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
-    },
+    // Escribe SIEMPRE en localStorage primero (síncrono, instantáneo)
+    // Luego intenta Supabase en background sin bloquear
     set: async (key, value) => {
+        // 1. localStorage primero — nunca falla, inmediato
+        try { localStorage.setItem(key, value); } catch { }
+        // 2. Supabase en background
         try {
             await fetch(SUPA_URL + "/rest/v1/bcm_storage", {
-                method: "POST", headers: { ...SH(), "Prefer": "resolution=merge-duplicates" },
+                method: "POST",
+                headers: { ...SH(), "Prefer": "resolution=merge-duplicates" },
                 body: JSON.stringify({ key, value })
             });
         } catch { }
-        try { localStorage.setItem(key, value); } catch { }
         return { value };
     },
+    // Lee: intenta Supabase, fallback a localStorage
+    get: async (key) => {
+        try {
+            const r = await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key) + "&select=value&limit=1", {
+                method: "GET", headers: SH(), mode: "cors"
+            });
+            if (r.ok) { const d = await r.json(); if (d && d.length > 0) return { value: d[0].value }; }
+        } catch { }
+        // Fallback localStorage
+        try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
+    },
+    // Lee SOLO desde localStorage — síncrono, cero latencia
+    getLocal: (key) => {
+        try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; }
+    },
     delete: async (key) => {
-        try { await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key), { method: "DELETE", headers: SH() }); } catch { }
         try { localStorage.removeItem(key); } catch { }
+        try { await fetch(SUPA_URL + "/rest/v1/bcm_storage?key=eq." + encodeURIComponent(key), { method: "DELETE", headers: SH() }); } catch { }
         return { deleted: true };
     },
     list: async (prefix) => {
@@ -42,6 +56,50 @@ const storage = {
         try { return { keys: Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix)) }; } catch { return { keys: [] }; }
     }
 };
+
+// Hook genérico para módulos con su propio estado persistido
+// Carga desde localStorage SINCRÓNICAMENTE (sin flash), persiste en ambos lados
+function useStoredState(key, defaultValue) {
+    const [state, setState] = useState(() => {
+        const local = storage.getLocal(key);
+        if (local?.value) { try { return JSON.parse(local.value); } catch { } }
+        return defaultValue;
+    });
+    const [cloudSynced, setCloudSynced] = useState(false);
+
+    // Al montar: sincronizar con Supabase una sola vez
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = await storage.get(key);
+                if (r?.value) {
+                    const cloudData = JSON.parse(r.value);
+                    // Usar Supabase solo si tiene más datos que el local
+                    setState(local => {
+                        const localSize = JSON.stringify(local).length;
+                        const cloudSize = JSON.stringify(cloudData).length;
+                        return cloudSize > localSize ? cloudData : local;
+                    });
+                }
+            } catch { }
+            setCloudSynced(true);
+        })();
+    }, [key]);
+
+    // Persiste cada vez que cambia el estado
+    const setAndPersist = useCallback((updater) => {
+        setState(prev => {
+            const next = typeof updater === 'function' ? updater(prev) : updater;
+            // Guardar inmediatamente en ambos lados
+            const json = JSON.stringify(next);
+            try { localStorage.setItem(key, json); } catch { }
+            storage.set(key, json).catch(() => {});
+            return next;
+        });
+    }, [key]);
+
+    return [state, setAndPersist, cloudSynced];
+}
 
 // ── CONSTANTES ─────────────────────────────────────────────────────────
 const AIRPORTS = [{ id: "aep", code: "AEP", name: "Aeroparque Jorge Newbery" }, { id: "eze", code: "EZE", name: "Aerop. Int'l Ministro Pistarini" }];
@@ -146,15 +204,32 @@ function toDataUrl(f, maxW = 1400) {
 function getBase64(d) { return d.split(',')[1]; }
 function getMediaType(d) { const m = d.match(/data:([^;]+);/); return m ? m[1] : 'image/jpeg'; }
 
-async function callAI(msgs, sys, apiKey) {
+// callAI con soporte de web_search real
+// useSearch=true activa búsqueda en internet (precios, proveedores, noticias, etc.)
+async function callAI(msgs, sys, apiKey, useSearch = false) {
     try {
-        const headers = { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true", "anthropic-version": "2023-06-01" };
+        const headers = {
+            "Content-Type": "application/json",
+            "anthropic-dangerous-direct-browser-access": "true",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "web-search-2025-03-05"
+        };
         if (apiKey) headers["x-api-key"] = apiKey;
         else return "⚠ Para usar el asistente, ingresá tu API Key en Más → Configuración → API Key de Claude.";
+
+        const body = {
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 3000,
+            messages: msgs,
+        };
+        if (sys) body.system = sys;
+        if (useSearch) {
+            body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+        }
+
+        // Primera llamada
         const r = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2000, system: sys, messages: msgs })
+            method: "POST", headers, body: JSON.stringify(body)
         });
         if (!r.ok) {
             let msg = "Error de conexión.";
@@ -163,7 +238,34 @@ async function callAI(msgs, sys, apiKey) {
         }
         const d = await r.json();
         if (d.error) return `Error: ${d.error.message || 'Sin respuesta.'}`;
-        return d.content?.map(b => b.text || "").join("") || "Sin respuesta.";
+
+        // Si el modelo usó web_search, hay que hacer una segunda vuelta con los resultados
+        if (useSearch && d.stop_reason === 'tool_use') {
+            // Construir mensajes con los resultados de las herramientas
+            const toolResults = d.content
+                .filter(b => b.type === 'tool_use')
+                .map(b => ({ type: 'tool_result', tool_use_id: b.id, content: b.input?.query ? `Búsqueda: ${b.input.query}` : 'Búsqueda completada' }));
+
+            if (toolResults.length > 0) {
+                const msgsConResultados = [
+                    ...msgs,
+                    { role: 'assistant', content: d.content },
+                    { role: 'user', content: toolResults }
+                ];
+                const r2 = await fetch("https://api.anthropic.com/v1/messages", {
+                    method: "POST", headers,
+                    body: JSON.stringify({ ...body, messages: msgsConResultados })
+                });
+                if (r2.ok) {
+                    const d2 = await r2.json();
+                    const texto2 = d2.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+                    if (texto2) return texto2;
+                }
+            }
+        }
+
+        // Extraer todo el texto de la respuesta
+        return d.content?.filter(b => b.type === 'text').map(b => b.text).join('') || 'Sin respuesta.';
     } catch (e) {
         return `Error de conexión: ${e.message || 'Verificá tu API Key en Configuración.'}`;
     }
@@ -759,8 +861,8 @@ Generá un informe profesional AA2000 con:
 Usá un tono técnico y profesional. Respondé en español rioplatense.`});
 
             const r = await callAI([{ role: 'user', content }],
-                `Sos un inspector de obras aeroportuarias para AA2000. Analizás fotos y generás informes técnicos precisos y profesionales en español rioplatense.`,
-                apiKey);
+                `Sos un inspector de obras aeroportuarias para AA2000. Analizás fotos y generás informes técnicos precisos y profesionales en español rioplatense. Si identificás materiales o trabajos, podés buscar precios actualizados en internet para incluir estimaciones de costo.`,
+                apiKey, true);
             setInforme(r);
             const nuevoInf = { id: uid(), titulo: `Análisis IA — ${new Date().toLocaleDateString('es-AR')}`, tipo: 'diario', fecha: new Date().toLocaleDateString('es-AR'), notas: 'Generado automáticamente por IA a partir de fotos', nombre: 'informe_ia.txt', ext: 'IA', url: 'data:text/plain;base64,' + btoa(unescape(encodeURIComponent(r))), size: '—', cargado: new Date().toLocaleDateString('es-AR') };
             upd(detail.id, { informes: [nuevoInf, ...(detail.informes || [])] });
@@ -1010,20 +1112,44 @@ function TabGastos({ detail, upd }) {
 
 function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg, apiKey }) {
     const UBICS = getUbics(cfg);
+    const defaultAp = UBICS[0]?.id || 'aep';
     const [showNew, setShowNew] = useState(false);
     const [tab, setTab] = useState("info");
-    const [form, setForm] = useState({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
+    const [form, setForm] = useState({ nombre: "", ap: defaultAp, sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
     const [newObs, setNewObs] = useState("");
     const fileRef = useRef(null); const archRef = useRef(null);
     const detail = detailId ? obras.find(o => o.id === detailId) : null;
 
+    // Actualizar form.ap si cambian las UBICS
+    useEffect(() => {
+        setForm(f => ({ ...f, ap: UBICS[0]?.id || f.ap }));
+    }, [UBICS.length]);
+
     function add() {
         if (!form.nombre.trim()) return;
-        setObras(p => [...p, { ...form, id: uid(), avance: parseInt(form.avance) || 0, pagado: 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]);
-        setForm({ nombre: "", ap: "aep", sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
+        const apFinal = form.ap || UBICS[0]?.id || defaultAp;
+        setObras(p => [...p, { ...form, ap: apFinal, id: uid(), avance: parseInt(form.avance) || 0, pagado: 0, obs: [], fotos: [], archivos: [], informes: [], docs: {} }]);
+        setForm({ nombre: "", ap: UBICS[0]?.id || defaultAp, sector: "", estado: "pendiente", avance: 0, inicio: "", cierre: "" });
         setShowNew(false);
     }
-    function upd(id, patch) { setObras(p => p.map(o => o.id === id ? { ...o, ...patch } : o)); }
+    function upd(id, patch) {
+        setObras(p => p.map(o => {
+            if (o.id !== id) return o;
+            const updated = { ...o, ...patch };
+            // Si el patch incluye fotos o archivos, guardarlos en su propia key inmediatamente
+            if (patch.fotos !== undefined) {
+                const key = `bcm_fotos_${id}`;
+                try { localStorage.setItem(key, JSON.stringify(patch.fotos)); } catch { }
+                storage.set(key, JSON.stringify(patch.fotos)).catch(() => { });
+            }
+            if (patch.archivos !== undefined) {
+                const key = `bcm_archs_${id}`;
+                try { localStorage.setItem(key, JSON.stringify(patch.archivos)); } catch { }
+                storage.set(key, JSON.stringify(patch.archivos)).catch(() => { });
+            }
+            return updated;
+        }));
+    }
     async function handleFoto(e) {
         if (!detail) return;
         const files = Array.from(e.target.files);
@@ -1159,11 +1285,56 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
 
 // ── PERSONAL ─────────────────────────────────────────────────────────
 function Personal({ personal, setPersonal, obras, cfg }) {
-    const [showNew, setShowNew] = useState(false);
     const [expanded, setExpanded] = useState(null);
-    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] });
+    const [tabPersona, setTabPersona] = useState({}); // tab activo por persona: 'info' | 'historial'
+    const [presentismo, setPresentismo] = useState({});
+    const [presentismoLoaded, setPresentismoLoaded] = useState(false);
     const fileRefs = useRef({}); const fotoRefs = useRef({}); const newFotoRef = useRef(null);
     const [nuevaTarea, setNuevaTarea] = useState({});
+    const [showNew, setShowNew] = useState(false);
+    const [form, setForm] = useState({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] });
+
+    // Cargar datos de presentismo para ver historial
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = await storage.get('bcm_presentismo');
+                if (r?.value) { const d = JSON.parse(r.value); setPresentismo(d.registros || {}); }
+            } catch { }
+            setPresentismoLoaded(true);
+        })();
+    }, []);
+
+    function getTabPersona(id) { return tabPersona[id] || 'info'; }
+    function setTabFor(id, tab) { setTabPersona(prev => ({ ...prev, [id]: tab })); }
+
+    // Obtener historial de presencia de una persona
+    function getHistorialPersona(personaId) {
+        const registros = [];
+        Object.entries(presentismo).forEach(([key, val]) => {
+            if (!key.startsWith(personaId + '_')) return;
+            const fecha = key.replace(personaId + '_', '');
+            const sesiones = val.sesiones || [];
+            sesiones.forEach(s => {
+                registros.push({
+                    fecha,
+                    obraNombre: s.obraNombre || '—',
+                    inicio: s.inicio,
+                    fin: s.fin,
+                    auto: s.auto,
+                    duracionMs: s.fin ? s.fin - s.inicio : null,
+                });
+            });
+        });
+        // Ordenar por inicio descendente
+        return registros.sort((a, b) => (b.inicio || 0) - (a.inicio || 0));
+    }
+
+    function totalHorasPersona(personaId) {
+        const hist = getHistorialPersona(personaId);
+        const ms = hist.reduce((t, r) => t + (r.duracionMs || 0), 0);
+        return formatDuration(ms);
+    }
 
     function ini(n) { return n.split(' ').slice(0, 2).map(w => w[0] || '').join('').toUpperCase(); }
     function add() { if (!form.nombre.trim()) return; setPersonal(p => [...p, { ...form, id: uid(), docs: {} }]); setForm({ nombre: "", rol: "Técnico", empresa: "BelfastCM", obra_id: "", telefono: "", foto: "", tareas: [] }); setShowNew(false); }
@@ -1184,82 +1355,151 @@ function Personal({ personal, setPersonal, obras, cfg }) {
                 const docsOk = Object.values(p.docs || {}).filter(Boolean).length;
                 const isOpen = expanded === p.id;
                 const obraAsig = obras.find(o => o.id === p.obra_id);
+                const hist = getHistorialPersona(p.id);
+                const tabActivo = getTabPersona(p.id);
                 return (<Card key={p.id} style={{ marginBottom: 10, overflow: "hidden" }}>
                     <div onClick={() => setExpanded(isOpen ? null : p.id)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px", cursor: "pointer" }}>
                         <Av p={p} size={40} />
-                        <div style={{ flex: 1 }}><div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{p.nombre}</div><div style={{ fontSize: 11, color: T.muted }}>{p.rol}{obraAsig ? ` · ${obraAsig.nombre}` : ""}</div></div>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{p.nombre}</div>
+                            <div style={{ fontSize: 11, color: T.muted }}>{p.rol}{obraAsig ? ` · ${obraAsig.nombre}` : ""}</div>
+                        </div>
                         <div style={{ display: "flex", gap: 3, marginRight: 4 }}>{DOC_TYPES.map(d => { const doc = p.docs?.[d.id]; const exp = doc?.vence && daysSince(doc.vence) <= 5; return <div key={d.id} style={{ width: 7, height: 7, borderRadius: "50%", background: exp ? "#F59E0B" : doc ? "#22c55e" : T.border }} />; })}</div>
                         <span style={{ fontSize: 11, color: T.muted }}>{docsOk}/{DOC_TYPES.length}</span>
                         <span style={{ fontSize: 14, color: T.muted, marginLeft: 2 }}>{isOpen ? "⌃" : "⌄"}</span>
                     </div>
-                    {isOpen && (<div style={{ padding: "0 14px 14px", borderTop: `1px solid ${T.border}` }}>
-                        <div style={{ display: "flex", gap: 14, marginTop: 14, marginBottom: 16, alignItems: "flex-start" }}>
-                            <div style={{ flexShrink: 0 }}>
-                                <input type="file" accept="image/*" style={{ display: "none" }} ref={el => fotoRefs.current[p.id] = el} onChange={async e => { if (e.target.files[0]) upd(p.id, { foto: await toDataUrl(e.target.files[0]) }); e.target.value = ""; }} />
-                                <Av p={p} size={76} showCam onClick={() => fotoRefs.current[p.id]?.click()} />
-                            </div>
-                            <div style={{ flex: 1 }}>
-                                <Lbl>WhatsApp</Lbl>
-                                <div style={{ display: "flex", gap: 6 }}>
-                                    <input type="tel" value={p.telefono || ""} onChange={e => upd(p.id, { telefono: e.target.value.replace(/\D/g, '') })} placeholder="5491155556666" style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "9px 12px", fontSize: 13, color: T.text }} />
-                                    {p.telefono && <a href={`https://wa.me/${p.telefono}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#25D366", border: "none", borderRadius: 9, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "white", fontSize: 14 }}>💬</button></a>}
-                                </div>
-                            </div>
-                        </div>
-                        <Lbl>Documentación</Lbl>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, margin: "6px 0 12px" }}>
-                            {DOC_TYPES.map(d => {
-                                const doc = p.docs?.[d.id]; const rk = `${p.id}_${d.id}`;
-                                const exp = doc?.vence && daysSince(doc.vence) <= 5;
-                                return (<div key={d.id}>
-                                    <input type="file" style={{ display: "none" }} ref={el => fileRefs.current[rk] = el} onChange={e => { if (e.target.files[0]) handleDoc(p.id, d.id, e.target.files[0]); e.target.value = ""; }} />
-                                    {doc ? (<div style={{ background: exp ? "#FFFBEB" : "#F0FDF4", border: `1.5px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 10, padding: "9px 10px" }}>
-                                        <div style={{ fontSize: 10, fontWeight: 700, color: exp ? "#92400E" : "#15803D", marginBottom: 2 }}>{d.label}</div>
-                                        <div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{doc.nombre}</div>
-                                        {d.acceptsExp && <input type="text" placeholder="Vence dd/mm/aa" value={doc.vence || ""} onChange={e => setVence(p.id, d.id, e.target.value)} style={{ width: "100%", fontSize: 10, padding: "4px 6px", border: `1px solid ${T.border}`, borderRadius: 6, background: "#fff", color: T.text, marginBottom: 6 }} />}
-                                        <div style={{ display: "flex", gap: 4 }}>
-                                            <a href={doc.url} download={doc.nombre} style={{ textDecoration: "none", flex: 1 }}><button style={{ width: "100%", background: "none", border: `1px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 6, padding: "4px 0", fontSize: 9, color: exp ? "#92400E" : "#15803D", fontWeight: 600, cursor: "pointer" }}>↓ Ver</button></a>
-                                            <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, docs: { ...x.docs, [d.id]: null } } : x))} style={{ background: "none", border: "1px solid #FCA5A5", borderRadius: 6, padding: "4px 7px", fontSize: 9, color: "#EF4444", cursor: "pointer" }}>✕</button>
-                                        </div>
-                                    </div>) : (<button onClick={() => fileRefs.current[rk]?.click()} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
-                                        <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 3 }}>{d.label.slice(0, 3).toUpperCase()}</div>
-                                        <div style={{ fontSize: 10, fontWeight: 600, color: T.sub }}>{d.label}</div>
-                                    </button>)}
-                                </div>);
-                            })}
-                        </div>
-                        <div style={{ marginBottom: 10 }}>
-                            <Lbl>Tareas asignadas</Lbl>
-                            <div style={{ display: 'flex', gap: 6, marginBottom: 8, marginTop: 4 }}>
-                                <input
-                                    value={nuevaTarea[p.id] || ''}
-                                    onChange={e => setNuevaTarea(prev => ({ ...prev, [p.id]: e.target.value }))}
-                                    onKeyDown={e => {
-                                        if (e.key === 'Enter' && nuevaTarea[p.id]?.trim()) {
-                                            setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x));
-                                            setNuevaTarea(prev => ({ ...prev, [p.id]: '' }));
-                                        }
-                                    }}
-                                    placeholder="Nueva tarea..."
-                                    style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: '8px 12px', fontSize: 12, color: T.text }}
-                                />
-                                <button onClick={() => {
-                                    if (!nuevaTarea[p.id]?.trim()) return;
-                                    setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x));
-                                    setNuevaTarea(prev => ({ ...prev, [p.id]: '' }));
-                                }} style={{ background: T.accent, border: 'none', borderRadius: T.rsm, padding: '8px 14px', fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', flexShrink: 0 }}>+</button>
-                            </div>
-                            {(p.tareas || []).length === 0 && <div style={{ fontSize: 12, color: T.muted, fontStyle: 'italic' }}>Sin tareas asignadas</div>}
-                            {(p.tareas || []).map(tk => (
-                                <div key={tk.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: tk.done ? '#F0FDF4' : '#FFFBEB', border: `1px solid ${tk.done ? '#86EFAC' : '#FDE68A'}`, borderRadius: 8, padding: '7px 10px', marginBottom: 5 }}>
-                                    <input type="checkbox" checked={tk.done} onChange={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.map(t2 => t2.id === tk.id ? { ...t2, done: !t2.done } : t2) } : x))} style={{ accentColor: T.accent, width: 15, height: 15, flexShrink: 0 }} />
-                                    <span style={{ flex: 1, fontSize: 12, color: T.text, textDecoration: tk.done ? 'line-through' : 'none' }}>{tk.txt}</span>
-                                    <span style={{ fontSize: 10, color: T.muted }}>{tk.fecha}</span>
-                                    <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.filter(t2 => t2.id !== tk.id) } : x))} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', fontSize: 12, padding: 2 }}>✕</button>
-                                </div>
+                    {isOpen && (<div style={{ borderTop: `1px solid ${T.border}` }}>
+                        {/* Tabs Info / Historial */}
+                        <div style={{ display: "flex", borderBottom: `1px solid ${T.border}` }}>
+                            {[['info', 'Info y docs'], ['historial', `Historial (${hist.length})`]].map(([id, label]) => (
+                                <button key={id} onClick={() => setTabFor(p.id, id)} style={{ flex: 1, padding: "10px 6px", background: "none", border: "none", fontSize: 12, fontWeight: tabActivo === id ? 700 : 500, color: tabActivo === id ? T.accent : T.muted, borderBottom: `2px solid ${tabActivo === id ? T.accent : "transparent"}`, cursor: "pointer" }}>{label}</button>
                             ))}
                         </div>
-                        <button onClick={() => { setPersonal(prev => prev.filter(x => x.id !== p.id)); if (expanded === p.id) setExpanded(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'pers_eliminar')}</button>
+
+                        {/* TAB INFO */}
+                        {tabActivo === 'info' && (<div style={{ padding: "14px 14px 14px" }}>
+                            <div style={{ display: "flex", gap: 14, marginBottom: 16, alignItems: "flex-start" }}>
+                                <div style={{ flexShrink: 0 }}>
+                                    <input type="file" accept="image/*" style={{ display: "none" }} ref={el => fotoRefs.current[p.id] = el} onChange={async e => { if (e.target.files[0]) upd(p.id, { foto: await toDataUrl(e.target.files[0]) }); e.target.value = ""; }} />
+                                    <Av p={p} size={76} showCam onClick={() => fotoRefs.current[p.id]?.click()} />
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <Lbl>WhatsApp</Lbl>
+                                    <div style={{ display: "flex", gap: 6 }}>
+                                        <input type="tel" value={p.telefono || ""} onChange={e => upd(p.id, { telefono: e.target.value.replace(/\D/g, '') })} placeholder="5491155556666" style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "9px 12px", fontSize: 13, color: T.text }} />
+                                        {p.telefono && <a href={`https://wa.me/${p.telefono}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}><button style={{ background: "#25D366", border: "none", borderRadius: 9, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "white", fontSize: 14 }}>💬</button></a>}
+                                    </div>
+                                </div>
+                            </div>
+                            <Lbl>Documentación</Lbl>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, margin: "6px 0 12px" }}>
+                                {DOC_TYPES.map(d => {
+                                    const doc = p.docs?.[d.id]; const rk = `${p.id}_${d.id}`;
+                                    const exp = doc?.vence && daysSince(doc.vence) <= 5;
+                                    return (<div key={d.id}>
+                                        <input type="file" style={{ display: "none" }} ref={el => fileRefs.current[rk] = el} onChange={e => { if (e.target.files[0]) handleDoc(p.id, d.id, e.target.files[0]); e.target.value = ""; }} />
+                                        {doc ? (<div style={{ background: exp ? "#FFFBEB" : "#F0FDF4", border: `1.5px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 10, padding: "9px 10px" }}>
+                                            <div style={{ fontSize: 10, fontWeight: 700, color: exp ? "#92400E" : "#15803D", marginBottom: 2 }}>{d.label}</div>
+                                            <div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{doc.nombre}</div>
+                                            {d.acceptsExp && <input type="text" placeholder="Vence dd/mm/aa" value={doc.vence || ""} onChange={e => setVence(p.id, d.id, e.target.value)} style={{ width: "100%", fontSize: 10, padding: "4px 6px", border: `1px solid ${T.border}`, borderRadius: 6, background: "#fff", color: T.text, marginBottom: 6 }} />}
+                                            <div style={{ display: "flex", gap: 4 }}>
+                                                <a href={doc.url} download={doc.nombre} style={{ textDecoration: "none", flex: 1 }}><button style={{ width: "100%", background: "none", border: `1px solid ${exp ? "#FDE68A" : "#86EFAC"}`, borderRadius: 6, padding: "4px 0", fontSize: 9, color: exp ? "#92400E" : "#15803D", fontWeight: 600, cursor: "pointer" }}>↓ Ver</button></a>
+                                                <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, docs: { ...x.docs, [d.id]: null } } : x))} style={{ background: "none", border: "1px solid #FCA5A5", borderRadius: 6, padding: "4px 7px", fontSize: 9, color: "#EF4444", cursor: "pointer" }}>✕</button>
+                                            </div>
+                                        </div>) : (<button onClick={() => fileRefs.current[rk]?.click()} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
+                                            <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 3 }}>{d.label.slice(0, 3).toUpperCase()}</div>
+                                            <div style={{ fontSize: 10, fontWeight: 600, color: T.sub }}>{d.label}</div>
+                                        </button>)}
+                                    </div>);
+                                })}
+                            </div>
+                            <div style={{ marginBottom: 10 }}>
+                                <Lbl>Tareas asignadas</Lbl>
+                                <div style={{ display: 'flex', gap: 6, marginBottom: 8, marginTop: 4 }}>
+                                    <input value={nuevaTarea[p.id] || ''} onChange={e => setNuevaTarea(prev => ({ ...prev, [p.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && nuevaTarea[p.id]?.trim()) { setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x)); setNuevaTarea(prev => ({ ...prev, [p.id]: '' })); } }} placeholder="Nueva tarea..." style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: '8px 12px', fontSize: 12, color: T.text }} />
+                                    <button onClick={() => { if (!nuevaTarea[p.id]?.trim()) return; setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: [...(x.tareas || []), { id: uid(), txt: nuevaTarea[p.id].trim(), done: false, fecha: new Date().toLocaleDateString('es-AR') }] } : x)); setNuevaTarea(prev => ({ ...prev, [p.id]: '' })); }} style={{ background: T.accent, border: 'none', borderRadius: T.rsm, padding: '8px 14px', fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer', flexShrink: 0 }}>+</button>
+                                </div>
+                                {(p.tareas || []).length === 0 && <div style={{ fontSize: 12, color: T.muted, fontStyle: 'italic' }}>Sin tareas asignadas</div>}
+                                {(p.tareas || []).map(tk => (
+                                    <div key={tk.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: tk.done ? '#F0FDF4' : '#FFFBEB', border: `1px solid ${tk.done ? '#86EFAC' : '#FDE68A'}`, borderRadius: 8, padding: '7px 10px', marginBottom: 5 }}>
+                                        <input type="checkbox" checked={tk.done} onChange={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.map(t2 => t2.id === tk.id ? { ...t2, done: !t2.done } : t2) } : x))} style={{ accentColor: T.accent, width: 15, height: 15, flexShrink: 0 }} />
+                                        <span style={{ flex: 1, fontSize: 12, color: T.text, textDecoration: tk.done ? 'line-through' : 'none' }}>{tk.txt}</span>
+                                        <span style={{ fontSize: 10, color: T.muted }}>{tk.fecha}</span>
+                                        <button onClick={() => setPersonal(prev => prev.map(x => x.id === p.id ? { ...x, tareas: x.tareas.filter(t2 => t2.id !== tk.id) } : x))} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', fontSize: 12, padding: 2 }}>✕</button>
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={() => { setPersonal(prev => prev.filter(x => x.id !== p.id)); if (expanded === p.id) setExpanded(null); }} style={{ width: "100%", background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: T.rsm, padding: "9px", fontSize: 12, fontWeight: 600, color: "#EF4444", cursor: "pointer" }}>{t(cfg, 'pers_eliminar')}</button>
+                        </div>)}
+
+                        {/* TAB HISTORIAL DE PRESENCIA */}
+                        {tabActivo === 'historial' && (<div style={{ padding: "14px" }}>
+                            {/* KPIs resumen */}
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+                                <div style={{ background: T.bg, borderRadius: T.rsm, padding: "10px 8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: T.accent }}>{hist.length}</div>
+                                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>Visitas</div>
+                                </div>
+                                <div style={{ background: T.bg, borderRadius: T.rsm, padding: "10px 8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: "#10B981" }}>{totalHorasPersona(p.id)}</div>
+                                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>Tiempo total</div>
+                                </div>
+                                <div style={{ background: T.bg, borderRadius: T.rsm, padding: "10px 8px", textAlign: "center" }}>
+                                    <div style={{ fontSize: 18, fontWeight: 800, color: "#8B5CF6" }}>{[...new Set(hist.map(h => h.obraNombre))].length}</div>
+                                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>Obras</div>
+                                </div>
+                            </div>
+
+                            {hist.length === 0 ? (
+                                <div style={{ textAlign: "center", padding: "24px 0", color: T.muted, fontSize: 13 }}>
+                                    <div style={{ fontSize: 32, marginBottom: 10 }}>🕐</div>
+                                    Sin registros de presencia.<br />
+                                    <span style={{ fontSize: 11 }}>Usá Presentismo GPS para registrar entradas y salidas.</span>
+                                </div>
+                            ) : (
+                                hist.map((r, i) => {
+                                    const entrada = r.inicio ? new Date(r.inicio) : null;
+                                    const salida = r.fin ? new Date(r.fin) : null;
+                                    const durMs = r.duracionMs;
+                                    return (<div key={i} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "12px 14px", marginBottom: 8 }}>
+                                        {/* Obra y fecha */}
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{r.obraNombre}</div>
+                                                <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{r.fecha}{r.auto ? ' · automático' : ' · manual'}</div>
+                                            </div>
+                                            {durMs ? (
+                                                <div style={{ background: T.accentLight, borderRadius: 8, padding: "4px 10px", textAlign: "center", flexShrink: 0 }}>
+                                                    <div style={{ fontSize: 13, fontWeight: 800, color: T.accent }}>{formatDuration(durMs)}</div>
+                                                </div>
+                                            ) : (
+                                                <div style={{ background: "#ECFDF5", borderRadius: 8, padding: "4px 10px" }}>
+                                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#10B981" }}>● En obra</div>
+                                                </div>
+                                            )}
+                                        </div>
+                                        {/* Timeline entrada/salida */}
+                                        <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
+                                            <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: "8px 0 0 8px", padding: "6px 12px", flex: 1 }}>
+                                                <div style={{ fontSize: 9, color: "#15803D", fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>Entrada</div>
+                                                <div style={{ fontSize: 13, fontWeight: 800, color: "#15803D" }}>
+                                                    {entrada ? entrada.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                                                </div>
+                                            </div>
+                                            <div style={{ width: 28, height: 28, background: T.border, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.muted} strokeWidth="2"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                                            </div>
+                                            <div style={{ background: salida ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${salida ? "#FECACA" : "#FDE68A"}`, borderRadius: "0 8px 8px 0", padding: "6px 12px", flex: 1, textAlign: "right" }}>
+                                                <div style={{ fontSize: 9, color: salida ? "#B91C1C" : "#92400E", fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>Salida</div>
+                                                <div style={{ fontSize: 13, fontWeight: 800, color: salida ? "#B91C1C" : "#92400E" }}>
+                                                    {salida ? salida.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : 'En obra'}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>);
+                                })
+                            )}
+                        </div>)}
                     </div>)}
                 </Card>);
             })}
@@ -1414,14 +1654,10 @@ Formato profesional AA2000, español rioplatense.` });
 // ── PRESUPUESTO ──────────────────────────────────────────────────────
 function PresupuestoView({ tipo, setView }) {
     const titulo = tipo === 'materiales' ? 'Presupuesto Materiales' : 'Subcontratos';
-    const [items, setItems] = useState([]);
+    const key = `bcm_presup_${tipo}`;
+    const [items, setItems] = useStoredState(key, []);
     const [showNew, setShowNew] = useState(false);
     const [form, setForm] = useState({ descripcion: '', proveedor: '', monto: '', obra: '', estado: 'pendiente' });
-    const [loaded, setLoaded] = useState(false);
-    const key = `bcm_presup_${tipo}`;
-
-    useEffect(() => { (async () => { try { const r = await storage.get(key); if (r?.value) setItems(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set(key, JSON.stringify(items)).catch(() => { }); }, [items, loaded]);
 
     const ESTADOS = [{ id: 'pendiente', label: 'Pendiente', color: '#F59E0B', bg: '#FFFBEB' }, { id: 'revision', label: 'En revisión', color: '#3B82F6', bg: '#EFF6FF' }, { id: 'aprobado', label: 'Aprobado', color: '#10B981', bg: '#ECFDF5' }, { id: 'rechazado', label: 'Rechazado', color: '#EF4444', bg: '#FEF2F2' }];
     const total = items.reduce((s, i) => s + parseMontoNum(i.monto), 0);
@@ -1477,12 +1713,9 @@ function PresupuestoView({ tipo, setView }) {
 
 // ── VIGILANCIA · PRESENTISMO ─────────────────────────────────────────
 function PanelVigilancia({ setView }) {
-    const [camaras, setCamaras] = useState([]);
+    const [camaras, setCamaras] = useStoredState('bcm_camaras', []);
     const [showNew, setShowNew] = useState(false);
     const [form, setForm] = useState({ nombre: '', url: '', sector: '', ap: 'aep', tipo: 'ip' });
-    const [loaded, setLoaded] = useState(false);
-    useEffect(() => { (async () => { try { const r = await storage.get('bcm_camaras'); if (r?.value) setCamaras(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set('bcm_camaras', JSON.stringify(camaras)).catch(() => { }); }, [camaras, loaded]);
     function add() { if (!form.nombre || !form.url) return; setCamaras(p => [...p, { ...form, id: uid() }]); setForm({ nombre: '', url: '', sector: '', ap: 'aep', tipo: 'ip' }); setShowNew(false); }
 
     return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -1549,17 +1782,17 @@ async function getCurrentPosition() {
 }
 
 function Presentismo({ personal, setPersonal, obras, setObras, currentUser, setView }) {
-    const [registros, setRegistros] = useState({});
-    const [bioLink, setBioLink] = useState('');
-    const [loaded, setLoaded] = useState(false);
+    const [presentismoData, setPresentismoData] = useStoredState('bcm_presentismo', { registros: {}, bioLink: '', trackingAuto: false });
+    const registros = presentismoData.registros || {};
+    const bioLink = presentismoData.bioLink || '';
+    const trackingAuto = !!presentismoData.trackingAuto;
+    function setRegistros(fn) { setPresentismoData(d => ({ ...d, registros: typeof fn === 'function' ? fn(d.registros || {}) : fn })); }
+    function setBioLink(v) { setPresentismoData(d => ({ ...d, bioLink: v })); }
+    function setTrackingAuto(v) { setPresentismoData(d => ({ ...d, trackingAuto: typeof v === 'function' ? v(d.trackingAuto) : v })); }
     const [gpsLoading, setGpsLoading] = useState(false);
     const [gpsMsg, setGpsMsg] = useState(null);
-    const [trackingAuto, setTrackingAuto] = useState(false);
     const [showObraConfig, setShowObraConfig] = useState(null);
     const watchRef = useRef(null);
-
-    useEffect(() => { (async () => { try { const r = await storage.get('bcm_presentismo'); if (r?.value) { const d = JSON.parse(r.value); setRegistros(d.registros || {}); setBioLink(d.bioLink || ''); setTrackingAuto(!!d.trackingAuto); } } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set('bcm_presentismo', JSON.stringify({ registros, bioLink, trackingAuto })).catch(() => { }); }, [registros, bioLink, trackingAuto, loaded]);
 
     const today = new Date().toLocaleDateString('es-AR');
     const todayKey = today;
@@ -1787,32 +2020,8 @@ function Presentismo({ personal, setPersonal, obras, setObras, currentUser, setV
 
 // ── ARCHIVOS · SEGUIMIENTO · RESUMEN ────────────────────────────────
 function Archivos({ setView }) {
-    const [files, setFiles] = useState(() => {
-        try { const v = localStorage.getItem("bcm_archivos"); return v ? JSON.parse(v) : []; } catch { return []; }
-    });
-    const [loaded, setLoaded] = useState(false);
+    const [files, setFiles] = useStoredState('bcm_archivos', []);
     const inputRef = useRef(null);
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const r = await storage.get("bcm_archivos");
-                if (r?.value) {
-                    const remoto = JSON.parse(r.value);
-                    // Usar el que tenga más archivos (el más completo)
-                    setFiles(local => remoto.length >= local.length ? remoto : local);
-                }
-            } catch { }
-            setLoaded(true);
-        })();
-    }, []);
-
-    // Guardar en localStorage inmediatamente + Supabase async
-    function guardar(nuevos) {
-        setFiles(nuevos);
-        try { localStorage.setItem("bcm_archivos", JSON.stringify(nuevos)); } catch { }
-        storage.set("bcm_archivos", JSON.stringify(nuevos)).catch(() => { });
-    }
 
     async function handleUp(e) {
         const nuevos = [...files];
@@ -1820,7 +2029,7 @@ function Archivos({ setView }) {
             const url = await toDataUrl(f);
             nuevos.push({ id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" });
         }
-        guardar(nuevos);
+        setFiles(nuevos);
         e.target.value = "";
     }
 
@@ -1835,7 +2044,7 @@ function Archivos({ setView }) {
                         <div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div>
                     </div>
                     <a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a>
-                    <button onClick={() => guardar(files.filter(x => x.id !== f.id))} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, width: 30, height: 30, fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
+                    <button onClick={() => setFiles(files.filter(x => x.id !== f.id))} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, width: 30, height: 30, fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
                 </div>))}
         </div>
     </div>);
@@ -1904,8 +2113,7 @@ function CotizacionView({ setView, apiKey, cfg }) {
     const [tipologia, setTipologia] = useState('refaccion');
     const [loading, setLoading] = useState(false);
     const [resultado, setResultado] = useState(null);
-    const [historial, setHistorial] = useState([]);
-    const [loaded, setLoaded] = useState(false);
+    const [historial, setHistorial] = useStoredState('bcm_cotizaciones', []);
     const camRef = useRef(null);
     const galRef = useRef(null);
 
@@ -1919,16 +2127,6 @@ function CotizacionView({ setView, apiKey, cfg }) {
         { id: 'estructura', label: 'Estructura' },
         { id: 'exterior', label: 'Exterior/Fachada' },
     ];
-
-    useEffect(() => {
-        (async () => {
-            try { const r = await storage.get('bcm_cotizaciones'); if (r?.value) setHistorial(JSON.parse(r.value)); } catch { }
-            setLoaded(true);
-        })();
-    }, []);
-    useEffect(() => {
-        if (loaded) storage.set('bcm_cotizaciones', JSON.stringify(historial)).catch(() => {});
-    }, [historial, loaded]);
 
     async function handleFoto(e) {
         const f = e.target.files?.[0]; if (!f) return;
@@ -1984,12 +2182,6 @@ Alertas de precios, variaciones regionales, plazos estimados.
 
 Todos los precios en PESOS ARGENTINOS ($). Indicá la fuente de referencia de cada precio.`;
 
-            const headers = {
-                "Content-Type": "application/json",
-                "anthropic-dangerous-direct-browser-access": "true",
-                "anthropic-version": "2023-06-01",
-                "x-api-key": apiKey,
-            };
             const msgs = foto
                 ? [{ role: 'user', content: [
                     { type: 'image', source: { type: 'base64', media_type: getMediaType(foto.url), data: getBase64(foto.url) } },
@@ -1997,12 +2189,12 @@ Todos los precios en PESOS ARGENTINOS ($). Indicá la fuente de referencia de ca
                 ]}]
                 : [{ role: 'user', content: promptBase }];
 
-            const r = await fetch("https://api.anthropic.com/v1/messages", {
-                method: "POST", headers,
-                body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 3000, messages: msgs })
-            });
-            const d = await r.json();
-            const texto = d.content?.map(b => b.text || '').join('') || d.error?.message || 'Error al generar';
+            // useSearch=true: busca en internet precios reales de Argentina
+            const texto = await callAI(
+                msgs,
+                `Sos un experto en costos de construcción en Argentina. Siempre buscá en internet los precios actualizados antes de responder. Fuentes: MercadoLibre Argentina, Sodimac, Easy, Ferreterías, Revista Cifras de Arquitectura. Respondé en español rioplatense con precios reales en pesos argentinos.`,
+                apiKey, true
+            );
 
             const nueva = {
                 id: uid(),
@@ -2201,8 +2393,8 @@ Ranking de los 10 materiales más consultados en Argentina con sus precios al ${
 Todos los precios en PESOS ARGENTINOS ($). Indicá siempre la fuente.`;
 
         const r = await callAI([{ role: 'user', content: prompt }],
-            `Sos un asistente experto en costos de construcción en Argentina. Tenés acceso a información de mercado actualizada de MercadoLibre, Sodimac, Easy, Ferreterías y publicaciones especializadas como Revista Cifras. Respondés siempre en español rioplatense con precios reales y actualizados.`,
-            apiKey);
+            `Sos un asistente experto en costos de construcción en Argentina. Buscá en internet los precios actualizados de MercadoLibre Argentina, Sodimac, Easy, Ferreterías locales y Revista Cifras. Respondés siempre en español rioplatense con precios reales y actualizados al día de hoy. Siempre buscá en internet antes de responder.`,
+            apiKey, true);
         setResultado({ texto: r, zona: zona || 'AMBA', material, categoria, fecha: new Date().toLocaleDateString('es-AR') });
         setLoading(false);
     }
@@ -2337,12 +2529,9 @@ function MensajesView({ setView, currentUser, personal }) {
 }
 
 function ContactosView({ setView }) {
-    const [contactos, setContactos] = useState([]);
+    const [contactos, setContactos] = useStoredState('bcm_contactos', []);
     const [showNew, setShowNew] = useState(false);
     const [form, setForm] = useState({ nombre: '', empresa: '', telefono: '', email: '', notas: '' });
-    const [loaded, setLoaded] = useState(false);
-    useEffect(() => { (async () => { try { const r = await storage.get('bcm_contactos'); if (r?.value) setContactos(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set('bcm_contactos', JSON.stringify(contactos)).catch(() => { }); }, [contactos, loaded]);
     function add() { if (!form.nombre.trim()) return; setContactos(p => [...p, { ...form, id: uid() }]); setForm({ nombre: '', empresa: '', telefono: '', email: '', notas: '' }); setShowNew(false); }
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <AppHeader title="Contactos" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} sub={`${contactos.length} contactos`} />
@@ -2379,13 +2568,10 @@ function ContactosView({ setView }) {
 }
 
 function ProveedoresView({ setView }) {
-    const [provs, setProvs] = useState([]);
+    const [provs, setProvs] = useStoredState('bcm_proveedores', []);
     const [showNew, setShowNew] = useState(false);
     const [form, setForm] = useState({ nombre: '', rubro: '', telefono: '', email: '', cuit: '', notas: '' });
-    const [loaded, setLoaded] = useState(false);
     const RUBROS = ['Materiales', 'Eléctrico', 'Plomería', 'Aberturas', 'Pintura', 'Herrería', 'Servicios', 'Transporte', 'Otros'];
-    useEffect(() => { (async () => { try { const r = await storage.get('bcm_proveedores'); if (r?.value) setProvs(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set('bcm_proveedores', JSON.stringify(provs)).catch(() => { }); }, [provs, loaded]);
     function add() { if (!form.nombre.trim()) return; setProvs(p => [...p, { ...form, id: uid() }]); setForm({ nombre: '', rubro: '', telefono: '', email: '', cuit: '', notas: '' }); setShowNew(false); }
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <AppHeader title="Proveedores" back onBack={() => setView("mas")} right={<PlusBtn onClick={() => setShowNew(true)} />} sub={`${provs.length} proveedores`} />
@@ -2608,7 +2794,7 @@ ${notas ? 'Notas del usuario: ' + notas : ''}
 
 Tono profesional AA2000, español rioplatense.`;
         const r = await callAI([{ role: 'user', content: template }],
-            'Sos ingeniero de obra para AA2000. Generás informes técnicos claros y profesionales en español rioplatense.', apiKey);
+            'Sos ingeniero de obra para AA2000. Generás informes técnicos claros y profesionales en español rioplatense. Si el informe requiere datos de precios o mercado, buscalos en internet.', apiKey, true);
 
         // Detectar errores (no guardar como informe si falló)
         if (!r || r.startsWith('⚠') || r.toLowerCase().includes('error') && r.length < 200) {
@@ -2761,13 +2947,25 @@ El usuario se llama: ${userName || 'desconocido'}.`;
             try { const r = await fetch('https://wttr.in/Buenos+Aires?format=j1'); if (r.ok) { const d = await r.json(); const c = d.current_condition?.[0]; if (c) extraInfo += `\n\nClima Buenos Aires: ${c.temp_C}°C, ${c.lang_es?.[0]?.value || c.weatherDesc?.[0]?.value}, humedad ${c.humidity}%`; } } catch { }
         }
 
-        const sys = `Sos el asistente IA de BelfastCM, una empresa de construcción que trabaja en aeropuertos AA2000 (AEP y EZE). Respondés en español rioplatense, tono profesional pero cercano.
+        const sys = `Sos el asistente IA de BelfastCM, la herramienta principal de trabajo de una empresa de construcción en aeropuertos AA2000 (AEP y EZE). Esta app reemplaza cualquier otra herramienta — el usuario no usa nada más que esta aplicación.
+
+Tenés acceso a búsqueda en internet en tiempo real. SIEMPRE buscá en internet cuando:
+- Te pregunten precios de materiales, mano de obra, m2 o presupuestos
+- El usuario quiera validar si un precio está bien (ej: "¿es correcto $900/m2 para oficinas?")
+- Te pidan proveedores, ferreterías o contactos en Argentina
+- Pregunten sobre normativas, decretos, pliegos o reglamentos
+- Cualquier información que pueda estar desactualizada
+
+Cuando el usuario comparte un precio o presupuesto, SIEMPRE verificalo contra el mercado actual.
+
+Fuentes prioritarias: MercadoLibre Argentina, Revista Cifras de Arquitectura, Cámara Argentina de la Construcción, Sodimac, Easy, INDEC, BCRA.
 
 ${buildContext()}${extraInfo}
 
-Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no está en los datos, decilo claro. Sé conciso y útil.`;
+Respondé en español rioplatense, tono profesional pero cercano. Sé la herramienta más útil posible — no digas "no tengo acceso a internet", siempre intentá buscar.`;
 
-        const r = await callAI(history, sys, apiKey);
+        // Siempre activo web_search — el modelo decide cuándo usarla
+        const r = await callAI(history, sys, apiKey, true);
         setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
         setLoading(false);
     }
@@ -2802,12 +3000,16 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
 
     async function guardarEnArchivos(att) {
         try {
-            const r = await storage.get('bcm_archivos');
-            const arr = r?.value ? JSON.parse(r.value) : [];
-            arr.push({ id: uid(), nombre: att.name, ext: att.name.split('.').pop().toUpperCase(), url: att.url, fecha: new Date().toLocaleDateString('es-AR'), size: (att.size / 1024).toFixed(0) + 'KB' });
-            await storage.set('bcm_archivos', JSON.stringify(arr));
+            // Leer del localStorage primero (síncrono y confiable)
+            const localVal = storage.getLocal('bcm_archivos');
+            const arr = localVal?.value ? JSON.parse(localVal.value) : [];
+            arr.push({ id: uid(), nombre: att.name, ext: att.name.split('.').pop().toUpperCase(), url: att.url, fecha: new Date().toLocaleDateString('es-AR'), size: att.size ? (att.size / 1024).toFixed(0) + 'KB' : '—' });
+            // Guardar inmediatamente en localStorage + Supabase en background
+            try { localStorage.setItem('bcm_archivos', JSON.stringify(arr)); } catch { }
+            storage.set('bcm_archivos', JSON.stringify(arr)).catch(() => {});
         } catch { }
         setShowSaveDialog(null);
+        setShowAttachMenu(false);
     }
 
     function startListening() {
@@ -2879,7 +3081,33 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
                             <span style={{ fontSize: 11, color: "#0369A1", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.attach.name}</span>
                         </div>
                     </a>)}
-                    {m.text && <div style={{ background: m.role === 'user' ? T.accent : T.card, color: m.role === 'user' ? "#fff" : T.text, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", border: m.role === 'user' ? "none" : `1px solid ${T.border}`, boxShadow: "0 1px 2px rgba(0,0,0,.05)" }}>{m.text}</div>}
+                    {m.text && <div>
+                        <div style={{ background: m.role === 'user' ? T.accent : T.card, color: m.role === 'user' ? "#fff" : T.text, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", border: m.role === 'user' ? "none" : `1px solid ${T.border}`, boxShadow: "0 1px 2px rgba(0,0,0,.05)" }}>{m.text}</div>
+                        {m.role === 'assistant' && m.text.length > 200 && (
+                            <button onClick={() => {
+                                const fecha = new Date().toLocaleDateString('es-AR');
+                                const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+                                const titulo = m.text.slice(0, 60).replace(/[#*\n]/g, '').trim() + '...';
+                                // Generar HTML descargable
+                                const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo}</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:14px;line-height:1.7}h1{color:#1D4ED8;font-size:18px;margin-bottom:4px}h2{color:#1D4ED8;font-size:15px;margin-top:24px}strong,b{font-weight:700}.meta{color:#666;font-size:11px;margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid #e5e7eb}.footer{margin-top:40px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}</style></head><body><h1>BelfastCM — Asistente IA</h1><div class="meta">Fecha: ${fecha} ${hora}</div><div>${m.text.replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div><div class="footer">Generado por BelfastCM × AA2000</div></body></html>`;
+                                const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+                                const url = URL.createObjectURL(blob);
+                                const nombre = `IA_${titulo.slice(0,30).replace(/\s/g,'_')}_${fecha.replace(/\//g,'-')}.html`;
+                                // Guardar en Archivos
+                                const localVal = storage.getLocal('bcm_archivos');
+                                const arr = localVal?.value ? JSON.parse(localVal.value) : [];
+                                arr.unshift({ id: uid(), nombre, ext: 'HTML', url, fecha, size: (blob.size/1024).toFixed(0)+'KB' });
+                                try { localStorage.setItem('bcm_archivos', JSON.stringify(arr)); } catch {}
+                                storage.set('bcm_archivos', JSON.stringify(arr)).catch(()=>{});
+                                // También descargar directamente
+                                const a = document.createElement('a'); a.href = url; a.download = nombre; a.click();
+                                setTimeout(()=>URL.revokeObjectURL(url), 3000);
+                            }} style={{ marginTop: 4, background: "none", border: "none", fontSize: 10, color: T.muted, cursor: "pointer", padding: "2px 0", display: "flex", alignItems: "center", gap: 4 }}>
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                                Guardar respuesta
+                            </button>
+                        )}
+                    </div>}
                 </div>))}
                 {loading && <div style={{ alignSelf: 'flex-start', padding: "9px 13px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, display: "flex", gap: 4 }}>
                     {[0, .15, .3].map(d => <div key={d} style={{ width: 7, height: 7, borderRadius: "50%", background: T.muted, animation: `pulse 1.2s infinite ${d}s` }} />)}
@@ -2979,28 +3207,228 @@ Respondé usando los datos reales que tenés arriba. Si te preguntan algo que no
     </div>);
 }
 
+// ── ALERTAS WHATSAPP ─────────────────────────────────────────────────
+async function enviarWA(phoneId, token, telefono, mensaje) {
+    // Formatear número: agregar 549 si es argentino sin código
+    let numero = telefono.replace(/\D/g, '');
+    if (numero.startsWith('0')) numero = '54' + numero.slice(1);
+    if (numero.startsWith('11') || numero.startsWith('351') || numero.startsWith('261')) numero = '54' + numero;
+    if (!numero.startsWith('54')) numero = '54' + numero;
+    if (numero.startsWith('549')) numero = numero; // ya tiene formato correcto
+    else if (numero.startsWith('54') && !numero.startsWith('549')) numero = '549' + numero.slice(2);
+
+    const r = await fetch(`https://graph.facebook.com/v19.0/${phoneId}/messages`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: numero,
+            type: 'text',
+            text: { body: mensaje }
+        })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error?.message || `Error ${r.status}`);
+    return d;
+}
+
+function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
+    const [enviando, setEnviando] = useState(false);
+    const [resultados, setResultados] = useState([]);
+    const [msgCustom, setMsgCustom] = useState('');
+    const [destinos, setDestinos] = useState([]);
+    const [tipoAlerta, setTipoAlerta] = useState('criticas');
+    const [showCustom, setShowCustom] = useState(false);
+
+    const waOk = cfg.waPhoneId && cfg.waToken;
+
+    // Construir lista de destinatarios desde personal con teléfono
+    const personalConTel = personal.filter(p => p.telefono);
+
+    const TIPOS = [
+        { id: 'criticas', label: 'Alertas críticas', color: '#EF4444', bg: '#FEF2F2' },
+        { id: 'documentacion', label: 'Documentación faltante', color: '#F59E0B', bg: '#FFFBEB' },
+        { id: 'licitaciones', label: 'Licitaciones urgentes', color: '#3B82F6', bg: '#EFF6FF' },
+        { id: 'personalizada', label: 'Mensaje personalizado', color: '#8B5CF6', bg: '#F5F3FF' },
+    ];
+
+    function getMensajesParaTipo(tipo) {
+        const hoy = new Date().toLocaleDateString('es-AR');
+        switch (tipo) {
+            case 'criticas':
+                return alerts.filter(a => a.prioridad === 'alta').map(a => `⚠ BelfastCM — ALERTA CRÍTICA\n${a.msg}\nFecha: ${hoy}`);
+            case 'documentacion':
+                return alerts.filter(a => a.id.startsWith('docfalta') || a.id.startsWith('doc_')).map(a => `📋 BelfastCM — Documentación\n${a.msg}\nPor favor regularizá esta situación. Fecha: ${hoy}`);
+            case 'licitaciones':
+                return alerts.filter(a => a.id.startsWith('lic_')).map(a => `🏗 BelfastCM — Licitación\n${a.msg}\nFecha: ${hoy}`);
+            case 'personalizada':
+                return msgCustom.trim() ? [`📢 BelfastCM\n${msgCustom.trim()}\nFecha: ${hoy}`] : [];
+            default: return [];
+        }
+    }
+
+    async function enviarAlertas() {
+        if (!waOk) { alert('Configurá WhatsApp Business API en Más → Configuración → WhatsApp'); return; }
+        const destinosSelec = destinos.length > 0 ? personalConTel.filter(p => destinos.includes(p.id)) : personalConTel;
+        if (destinosSelec.length === 0) { alert('No hay personal con teléfono registrado'); return; }
+        const mensajes = getMensajesParaTipo(tipoAlerta);
+        if (mensajes.length === 0) { alert('No hay alertas de este tipo para enviar'); return; }
+
+        setEnviando(true);
+        setResultados([]);
+        const res = [];
+        const mensaje = mensajes.join('\n\n');
+
+        for (const p of destinosSelec) {
+            try {
+                await enviarWA(cfg.waPhoneId, cfg.waToken, p.telefono, mensaje);
+                res.push({ nombre: p.nombre, tel: p.telefono, ok: true });
+            } catch (e) {
+                res.push({ nombre: p.nombre, tel: p.telefono, ok: false, error: e.message });
+            }
+            // Pequeña pausa para no saturar la API
+            await new Promise(r => setTimeout(r, 300));
+        }
+        setResultados(res);
+        setEnviando(false);
+    }
+
+    return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
+        <AppHeader title="Alertas WhatsApp" back onBack={() => setView("mas")} sub="Envío masivo automático" />
+        <div style={{ padding: "14px 18px" }}>
+
+            {!waOk && (<div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "14px 16px", marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#B91C1C", marginBottom: 6 }}>WhatsApp no configurado</div>
+                <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 10, lineHeight: 1.5 }}>Para enviar alertas automáticas necesitás configurar la WhatsApp Business API de Meta.</div>
+                <button onClick={() => setView("mas")} style={{ background: "#B91C1C", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, color: "#fff", cursor: "pointer" }}>Ir a Configuración →</button>
+            </div>)}
+
+            {/* Tipo de alerta */}
+            <Card style={{ padding: "16px", marginBottom: 12 }}>
+                <Lbl>Tipo de alerta a enviar</Lbl>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                    {TIPOS.map(t => {
+                        const count = t.id === 'personalizada' ? (msgCustom.trim() ? 1 : 0) : getMensajesParaTipo(t.id).length;
+                        return (<button key={t.id} onClick={() => setTipoAlerta(t.id)} style={{ padding: "10px 8px", borderRadius: T.rsm, border: `1.5px solid ${tipoAlerta === t.id ? t.color : T.border}`, background: tipoAlerta === t.id ? t.bg : T.card, cursor: "pointer", textAlign: "left" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: t.color }}>{t.label}</div>
+                            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{count} {t.id === 'personalizada' ? 'mensaje' : `alerta${count !== 1 ? 's' : ''}`}</div>
+                        </button>);
+                    })}
+                </div>
+
+                {tipoAlerta === 'personalizada' && (
+                    <Field label="Mensaje a enviar">
+                        <textarea value={msgCustom} onChange={e => setMsgCustom(e.target.value)} placeholder="Ej: Mañana hay inspección en EZE Terminal A. Presentarse a las 8:00hs con documentación completa." rows={4} style={{ width: "100%", background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "10px 12px", fontSize: 13, color: T.text, resize: "none" }} />
+                    </Field>
+                )}
+
+                {/* Preview del mensaje */}
+                {getMensajesParaTipo(tipoAlerta).length > 0 && (
+                    <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "#15803D", marginBottom: 6, textTransform: "uppercase" }}>Preview del mensaje</div>
+                        <div style={{ fontSize: 12, color: "#166534", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{getMensajesParaTipo(tipoAlerta)[0]}</div>
+                        {getMensajesParaTipo(tipoAlerta).length > 1 && <div style={{ fontSize: 10, color: "#15803D", marginTop: 6 }}>+ {getMensajesParaTipo(tipoAlerta).length - 1} alertas más en el mismo mensaje</div>}
+                    </div>
+                )}
+            </Card>
+
+            {/* Destinatarios */}
+            <Card style={{ padding: "16px", marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <Lbl>Destinatarios ({destinos.length === 0 ? `todos — ${personalConTel.length}` : destinos.length} personas)</Lbl>
+                    {destinos.length > 0 && <button onClick={() => setDestinos([])} style={{ background: "none", border: "none", fontSize: 11, color: T.accent, fontWeight: 600, cursor: "pointer" }}>Seleccionar todos</button>}
+                </div>
+                {personalConTel.length === 0 ? (
+                    <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic" }}>No hay personal con número de teléfono cargado. Agregá teléfonos en la sección Personal.</div>
+                ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {personalConTel.map(p => {
+                            const sel = destinos.length === 0 || destinos.includes(p.id);
+                            return (<button key={p.id} onClick={() => {
+                                if (destinos.length === 0) {
+                                    // Estaba "todos" → deseleccionar solo este
+                                    setDestinos(personalConTel.filter(x => x.id !== p.id).map(x => x.id));
+                                } else if (destinos.includes(p.id)) {
+                                    const nuevos = destinos.filter(id => id !== p.id);
+                                    setDestinos(nuevos.length === personalConTel.length ? [] : nuevos);
+                                } else {
+                                    const nuevos = [...destinos, p.id];
+                                    setDestinos(nuevos.length === personalConTel.length ? [] : nuevos);
+                                }
+                            }} style={{ display: "flex", alignItems: "center", gap: 10, background: sel ? "#ECFDF5" : T.bg, border: `1.5px solid ${sel ? "#86EFAC" : T.border}`, borderRadius: T.rsm, padding: "10px 12px", cursor: "pointer", textAlign: "left" }}>
+                                <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${sel ? "#10B981" : T.border}`, background: sel ? "#10B981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                                    {sel && <svg width="11" height="11" viewBox="0 0 24 24" fill="white"><path d="M4.5 12.75l6 6 9-13.5" strokeWidth="3" stroke="white" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{p.nombre}</div>
+                                    <div style={{ fontSize: 11, color: T.muted }}>{p.rol} · {p.telefono}</div>
+                                </div>
+                            </button>);
+                        })}
+                    </div>
+                )}
+            </Card>
+
+            {/* Botón enviar */}
+            <button onClick={enviarAlertas} disabled={enviando || !waOk || personalConTel.length === 0}
+                style={{ width: "100%", background: enviando ? "#94A3B8" : "#25D366", border: "none", borderRadius: T.rsm, padding: "16px", fontSize: 15, fontWeight: 800, color: "#fff", cursor: enviando ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 16 }}>
+                {enviando ? (<><div style={{ width: 20, height: 20, border: "2.5px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin .8s linear infinite" }} />Enviando...</>) : (
+                    <><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M1.5 4.5a3 3 0 013-3h1.372c.86 0 1.61.586 1.819 1.42l1.105 4.423a1.875 1.875 0 01-.694 1.955l-1.293.97c-.135.101-.164.249-.126.352a11.285 11.285 0 006.697 6.697c.103.038.25.009.352-.126l.97-1.293a1.875 1.875 0 011.955-.694l4.423 1.105c.834.209 1.42.959 1.42 1.82V19.5a3 3 0 01-3 3h-2.25C8.552 22.5 1.5 15.448 1.5 6.75V4.5z" /></svg>
+                    Enviar por WhatsApp</>
+                )}
+            </button>
+
+            {/* Resultados */}
+            {resultados.length > 0 && (<Card style={{ padding: "14px 16px" }}>
+                <Lbl>Resultado del envío</Lbl>
+                <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+                    <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: "#10B981" }}>{resultados.filter(r => r.ok).length}</div>
+                        <div style={{ fontSize: 10, color: T.muted }}>Enviados</div>
+                    </div>
+                    {resultados.filter(r => !r.ok).length > 0 && <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: "#EF4444" }}>{resultados.filter(r => !r.ok).length}</div>
+                        <div style={{ fontSize: 10, color: T.muted }}>Fallidos</div>
+                    </div>}
+                </div>
+                {resultados.map((r, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.border}` }}>
+                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: r.ok ? "#10B981" : "#EF4444", flexShrink: 0 }} />
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{r.nombre}</div>
+                            {!r.ok && <div style={{ fontSize: 10, color: "#EF4444" }}>{r.error}</div>}
+                        </div>
+                        <div style={{ fontSize: 10, color: r.ok ? "#10B981" : "#EF4444", fontWeight: 700 }}>{r.ok ? '✓ Enviado' : '✗ Error'}</div>
+                    </div>
+                ))}
+            </Card>)}
+        </div>
+    </div>);
+}
+
 // ── MAS (Más opciones + Configuración) ───────────────────────────────
 function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
     const [showCfg, setShowCfg] = useState(false);
     const [cfgSection, setCfgSection] = useState('cuenta');
 
     const MAS_ITEMS = [
-        { id: 'licitaciones', label: 'Licitaciones', color: '#3B82F6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M7.5 5.25a3 3 0 013-3h3a3 3 0 013 3v.205c.933.085 1.857.197 2.774.334 1.454.218 2.476 1.483 2.476 2.917v3.033c0 1.211-.734 2.352-1.936 2.752A24.726 24.726 0 0112 15.75c-2.73 0-5.357-.442-7.814-1.259-1.202-.4-1.936-1.541-1.936-2.752V8.706c0-1.434 1.022-2.7 2.476-2.917A48.814 48.814 0 017.5 5.455V5.25zm7.5 0v.09a49.488 49.488 0 00-6 0v-.09a1.5 1.5 0 011.5-1.5h3a1.5 1.5 0 011.5 1.5zm-3 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z" /><path d="M3 18.4v-2.796a4.3 4.3 0 00.713.31A26.226 26.226 0 0012 17.25c2.892 0 5.68-.468 8.287-1.335.252-.084.49-.189.713-.311V18.4c0 1.452-1.047 2.728-2.523 2.923-2.12.282-4.282.427-6.477.427a49.19 49.19 0 01-6.477-.427C4.047 21.128 3 19.852 3 18.4z" /></svg> },
-        { id: 'seguimiento', label: 'Seguimiento', color: '#EF4444', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M9.401 3.003c1.155-2.004 4.043-2.004 5.197 0l7.355 12.748c1.154 2.004-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.496-2.598-4.5L9.4 3.003zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z" /></svg> },
-        { id: 'presupuesto_materiales', label: 'Materiales', color: '#F59E0B', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12.378 1.602a.75.75 0 00-.756 0L3 6.632l9 5.25 9-5.25-8.622-5.03zM21.75 7.93l-9 5.25v9l8.628-5.032a.75.75 0 00.372-.648V7.93zM11.25 22.18v-9l-9-5.25v8.57a.75.75 0 00.372.648l8.628 5.033z" /></svg> },
-        { id: 'presupuesto_subcontratos', label: 'Subcontratos', color: '#8B5CF6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" /></svg> },
-        { id: 'informes_ia', label: 'Informes IA', color: '#10B981', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 6a.75.75 0 00-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 000-1.5h-3.75V6z" /></svg> },
-        { id: 'gantt', label: 'Gantt', color: '#0891B2', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M2.25 13.5a8.25 8.25 0 018.25-8.25.75.75 0 01.75.75v6.75H18a.75.75 0 01.75.75 8.25 8.25 0 01-16.5 0z" /><path fillRule="evenodd" clipRule="evenodd" d="M12.75 3a.75.75 0 01.75-.75 8.25 8.25 0 018.25 8.25.75.75 0 01-.75.75h-7.5a.75.75 0 01-.75-.75V3z" /></svg> },
-        { id: 'mensajes', label: 'Mensajes', color: '#6366F1', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M4.848 2.771A49.144 49.144 0 0112 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 01-3.476.383.39.39 0 00-.297.17l-2.755 4.133a.75.75 0 01-1.248 0l-2.755-4.133a.39.39 0 00-.297-.17 48.9 48.9 0 01-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97z" /></svg> },
-        { id: 'contactos', label: 'Contactos', color: '#14B8A6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" /></svg> },
-        { id: 'proveedores', label: 'Proveedores', color: '#F97316', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.375 4.5C2.339 4.5 1.5 5.34 1.5 6.375V13.5h12V6.375c0-1.036-.84-1.875-1.875-1.875h-8.25zM13.5 15h-12v2.625c0 1.035.84 1.875 1.875 1.875h.375a3 3 0 116 0h3a.75.75 0 00.75-.75V15z" /><path d="M8.25 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0zM15.75 6.75a.75.75 0 00-.75.75v11.25c0 .087.015.17.042.248a3 3 0 015.958.464c.853-.175 1.522-.935 1.464-1.883a18.659 18.659 0 00-3.732-10.104 1.837 1.837 0 00-1.47-.725H15.75z" /><path d="M19.5 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z" /></svg> },
-        { id: 'vigilancia', label: 'Vigilancia', color: '#1E40AF', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M4.5 4.5a3 3 0 00-3 3v9a3 3 0 003 3h8.25a3 3 0 003-3v-9a3 3 0 00-3-3H4.5zM19.94 18.75l-2.69-2.69V7.94l2.69-2.69c.944-.945 2.56-.276 2.56 1.06v11.38c0 1.336-1.616 2.005-2.56 1.06z" /></svg> },
-        { id: 'presentismo', label: 'Presentismo', color: '#DB2777', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zm4.28 10.28a.75.75 0 000-1.06l-3-3a.75.75 0 10-1.06 1.06l1.72 1.72H8.25a.75.75 0 000 1.5h5.69l-1.72 1.72a.75.75 0 101.06 1.06l3-3z" /></svg> },
-        { id: 'archivos', label: 'Archivos', color: '#475569', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19.5 21a3 3 0 003-3v-4.5a3 3 0 00-3-3h-15a3 3 0 00-3 3V18a3 3 0 003 3h15zM1.5 10.146V6a3 3 0 013-3h5.379a2.25 2.25 0 011.59.659l2.122 2.121c.14.141.331.22.53.22H19.5a3 3 0 013 3v1.146A4.483 4.483 0 0019.5 9h-15a4.483 4.483 0 00-3 1.146z" /></svg> },
-        { id: 'info_externa', label: 'Info externa', color: '#2563EB', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M11.47 3.84a.75.75 0 011.06 0l8.69 8.69a.75.75 0 101.06-1.061l-8.689-8.69a2.25 2.25 0 00-3.182 0l-8.69 8.69a.75.75 0 001.061 1.061l8.69-8.69z" /><path d="M12 5.432l8.159 8.159c.03.03.06.058.091.086v6.198c0 1.035-.84 1.875-1.875 1.875H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75.75V21a.75.75 0 01-.75.75H5.625a1.875 1.875 0 01-1.875-1.875v-6.198a2.29 2.29 0 00.091-.086L12 5.432z" /></svg> },
-        { id: 'resumen', label: 'Resumen', color: '#059669', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M2.25 13.5a8.25 8.25 0 018.25-8.25.75.75 0 01.75.75v6.75H18a.75.75 0 01.75.75 8.25 8.25 0 01-16.5 0z" /><path fillRule="evenodd" clipRule="evenodd" d="M12.75 3a.75.75 0 01.75-.75 8.25 8.25 0 018.25 8.25.75.75 0 01-.75.75h-7.5a.75.75 0 01-.75-.75V3z" /></svg> },
-        { id: 'cotizacion', label: 'Cotización', color: '#0EA5E9', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM9 7.5A.75.75 0 009 9h1.5c.98 0 1.813.626 2.122 1.5H9A.75.75 0 009 12h3.622a2.251 2.251 0 01-2.122 1.5H9a.75.75 0 00-.53 1.28l3 3a.75.75 0 101.06-1.06l-1.7-1.7A3.75 3.75 0 0014.78 12H15a.75.75 0 000-1.5h-.22A3.75 3.75 0 0012.78 9H15a.75.75 0 000-1.5H9z" /></svg> },
-        { id: 'materiales_zona', label: 'Materiales', color: '#7C3AED', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.375 4.5C2.339 4.5 1.5 5.34 1.5 6.375V13.5h12V6.375c0-1.036-.84-1.875-1.875-1.875h-8.25zM13.5 15h-12v2.625c0 1.035.84 1.875 1.875 1.875h.375a3 3 0 116 0h3a.75.75 0 00.75-.75V15z" /><path d="M8.25 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0zM15.75 6.75a.75.75 0 00-.75.75v11.25c0 .087.015.17.042.248a3 3 0 015.958.464c.853-.175 1.522-.935 1.464-1.883a18.659 18.659 0 00-3.732-10.104 1.837 1.837 0 00-1.47-.725H15.75z" /><path d="M19.5 19.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z" /></svg> },
+        { id: 'licitaciones', label: 'Licitaciones', color: '#3B82F6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg> },
+        { id: 'seguimiento', label: 'Seguimiento', color: '#EF4444', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg> },
+        { id: 'presupuesto_materiales', label: 'Materiales', color: '#F59E0B', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" /></svg> },
+        { id: 'presupuesto_subcontratos', label: 'Subcontratos', color: '#8B5CF6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" /></svg> },
+        { id: 'informes_ia', label: 'Informes IA', color: '#10B981', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21a48.309 48.309 0 01-8.135-.687c-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" /></svg> },
+        { id: 'gantt', label: 'Gantt', color: '#0891B2', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></svg> },
+        { id: 'mensajes', label: 'Mensajes', color: '#6366F1', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8.625 9.75a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" /></svg> },
+        { id: 'contactos', label: 'Contactos', color: '#14B8A6', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" /></svg> },
+        { id: 'proveedores', label: 'Proveedores', color: '#F97316', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 00-10.026 0 1.106 1.106 0 00-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" /></svg> },
+        { id: 'vigilancia', label: 'Vigilancia', color: '#1E40AF', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg> },
+        { id: 'presentismo', label: 'Presentismo', color: '#DB2777', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" /></svg> },
+        { id: 'archivos', label: 'Archivos', color: '#475569', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" /></svg> },
+        { id: 'info_externa', label: 'Info externa', color: '#2563EB', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253M3.157 7.582A8.959 8.959 0 003 12c0 .778.099 1.533.284 2.253" /></svg> },
+        { id: 'resumen', label: 'Resumen', color: '#059669', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" /></svg> },
+        { id: 'cotizacion', label: 'Cotización', color: '#0EA5E9', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg> },
+        { id: 'materiales_zona', label: 'Materiales', color: '#7C3AED', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM10.5 7.5v6m3-3h-6" /></svg> },
+        { id: 'alertas_wa', label: 'Alertas WA', color: '#25D366', svg: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" /></svg> },
     ];
 
     function updCfg(patch) { setCfg(p => ({ ...p, ...patch })); }
@@ -3042,7 +3470,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
             <Card style={{ padding: "14px 16px", marginBottom: 10, cursor: "pointer" }} onClick={() => setShowCfg(true)}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ width: 42, height: 42, borderRadius: 10, background: T.accentLight, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 00-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 00-2.282.819l-.922 1.597a1.875 1.875 0 00.432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 000 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 00-.432 2.385l.922 1.597a1.875 1.875 0 002.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 002.28-.819l.923-1.597a1.875 1.875 0 00-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 000-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 00-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 00-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 00-1.85-1.567h-1.843zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" /></svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                     </div>
                     <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{t(cfg, 'mas_config')}</div>
@@ -3054,7 +3482,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
             <Card style={{ padding: "14px 16px", cursor: "pointer" }} onClick={logout}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ width: 42, height: 42, borderRadius: 10, background: "#FEF2F2", color: "#EF4444", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M7.5 3.75A1.5 1.5 0 006 5.25v13.5a1.5 1.5 0 001.5 1.5h6a1.5 1.5 0 001.5-1.5V15a.75.75 0 011.5 0v3.75a3 3 0 01-3 3h-6a3 3 0 01-3-3V5.25a3 3 0 013-3h6a3 3 0 013 3V9A.75.75 0 0115 9V5.25a1.5 1.5 0 00-1.5-1.5h-6zm10.72 4.72a.75.75 0 011.06 0l3 3a.75.75 0 010 1.06l-3 3a.75.75 0 11-1.06-1.06l1.72-1.72H9a.75.75 0 010-1.5h10.94l-1.72-1.72a.75.75 0 010-1.06z" /></svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" /></svg>
                     </div>
                     <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#EF4444" }}>{t(cfg, 'mas_cerrar_sesion')}</div>
@@ -3065,7 +3493,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
         </div>
         {showCfg && (<Sheet title="Configuración" onClose={() => setShowCfg(false)}>
             <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto" }}>
-                {[{ id: 'cuenta', l: 'Cuenta' }, { id: 'tema', l: 'Tema' }, { id: 'font', l: 'Fuente' }, { id: 'forma', l: 'Forma' }, { id: 'logos', l: 'Logos' }, { id: 'ubic', l: 'Ubicaciones' }, { id: 'api', l: 'API Key' }, { id: 'textos', l: 'Textos' }].map(s => (
+                {[{ id: 'cuenta', l: 'Cuenta' }, { id: 'tema', l: 'Tema' }, { id: 'font', l: 'Fuente' }, { id: 'forma', l: 'Forma' }, { id: 'logos', l: 'Logos' }, { id: 'ubic', l: 'Ubicaciones' }, { id: 'api', l: 'API Key' }, { id: 'whatsapp', l: 'WhatsApp' }, { id: 'textos', l: 'Textos' }].map(s => (
                     <button key={s.id} onClick={() => setCfgSection(s.id)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${cfgSection === s.id ? T.accent : T.border}`, background: cfgSection === s.id ? T.accentLight : T.card, color: cfgSection === s.id ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{s.l}</button>
                 ))}
             </div>
@@ -3155,6 +3583,50 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
                     <TInput value={apiKey || ''} onChange={e => setApiKey(e.target.value.trim())} placeholder="sk-ant-api03-..." />
                 </Field>
                 {apiKey && <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#15803D", fontWeight: 600 }}>✓ API Key configurada</div>}
+            </div>)}
+
+            {cfgSection === 'whatsapp' && (<div>
+                <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#15803D", marginBottom: 4 }}>📱 WhatsApp Business API — Meta</div>
+                    <div style={{ fontSize: 11, color: "#166534", lineHeight: 1.6 }}>
+                        Para configurar:<br/>
+                        1. Andá a developers.facebook.com<br/>
+                        2. Creá una app → agregá WhatsApp<br/>
+                        3. Registrá tu número dedicado<br/>
+                        4. Pegá las credenciales acá abajo
+                    </div>
+                    <a href="https://developers.facebook.com" target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
+                        <button style={{ marginTop: 10, background: "#15803D", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 11, fontWeight: 700, color: "#fff", cursor: "pointer" }}>Abrir Meta Developers →</button>
+                    </a>
+                </div>
+                <Field label="Phone Number ID">
+                    <TInput value={cfg.waPhoneId || ''} onChange={e => updCfg({ waPhoneId: e.target.value.trim() })} placeholder="123456789012345" />
+                </Field>
+                <Field label="WhatsApp Business Account ID (WABA ID)">
+                    <TInput value={cfg.waWabaId || ''} onChange={e => updCfg({ waWabaId: e.target.value.trim() })} placeholder="987654321098765" />
+                </Field>
+                <Field label="Access Token (permanente)">
+                    <TInput value={cfg.waToken || ''} onChange={e => updCfg({ waToken: e.target.value.trim() })} placeholder="EAAxxxxxx..." />
+                </Field>
+                {cfg.waPhoneId && cfg.waToken ? (
+                    <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 8, padding: "10px 12px", fontSize: 11, color: "#15803D", fontWeight: 600 }}>
+                        ✓ WhatsApp configurado — podés enviar alertas desde Más → Alertas WhatsApp
+                    </div>
+                ) : (
+                    <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "10px 12px", fontSize: 11, color: "#92400E" }}>
+                        ⚠ Completá Phone Number ID y Access Token para activar el envío automático
+                    </div>
+                )}
+                <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, marginBottom: 6 }}>Cómo conseguir el Access Token permanente:</div>
+                    <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>
+                        1. Meta Business → Configuración → Usuarios del sistema<br/>
+                        2. Creá un usuario del sistema (Admin)<br/>
+                        3. Asignale el app BelfastCM con rol Admin<br/>
+                        4. Generá token → seleccioná permisos: whatsapp_business_messaging<br/>
+                        5. Sin fecha de vencimiento → copiá el token
+                    </div>
+                </div>
             </div>)}
 
             {cfgSection === 'textos' && (<div>
@@ -3295,10 +3767,26 @@ function AppInner() {
                     storage.get('bcm_cfg'), storage.get('bcm_api_key'), storage.get('bcm_current_user'),
                 ]);
                 if (rLics?.value) try { setLics(JSON.parse(rLics.value)); } catch { }
-                if (rObras?.value) try { setObras(JSON.parse(rObras.value)); } catch { }
+                if (rObras?.value) try {
+                    const obrasBase = JSON.parse(rObras.value);
+                    // Cargar fotos y archivos de cada obra desde sus keys separadas
+                    const obrasConFotos = await Promise.all(obrasBase.map(async o => {
+                        let fotos = o.fotos || [];
+                        let archivos = o.archivos || [];
+                        try {
+                            const rf = await storage.get(`bcm_fotos_${o.id}`);
+                            if (rf?.value) fotos = JSON.parse(rf.value);
+                        } catch { }
+                        try {
+                            const ra = await storage.get(`bcm_archs_${o.id}`);
+                            if (ra?.value) archivos = JSON.parse(ra.value);
+                        } catch { }
+                        return { ...o, fotos, archivos };
+                    }));
+                    setObras(obrasConFotos);
+                } catch { }
                 if (rPers?.value) try { setPersonal(JSON.parse(rPers.value)); } catch { }
                 if (rCfg?.value) try { setCfg(c => ({ ...DEFAULT_CONFIG, ...JSON.parse(rCfg.value) })); } catch { }
-                // Solo aplicar API key remota si hay valor real (no vacío) — protege de borrarla por bug
                 if (rKey?.value && rKey.value.trim()) setApiKey(rKey.value);
                 if (rUser?.value) try { setUser(JSON.parse(rUser.value)); } catch { }
             } catch { }
@@ -3310,9 +3798,16 @@ function AppInner() {
     const lastLocalEditRef = useRef({ lics: 0, obras: 0, personal: 0, cfg: 0 });
     function markLocalEdit(key) { lastLocalEditRef.current[key] = Date.now(); }
 
-    // Persistir cambios (con marca de última edición local + localStorage para arranque sincrónico)
+    // Persistir cambios — obras se guardan SIN fotos/archivos (esos van en keys separadas via upd())
     useEffect(() => { if (loaded) { markLocalEdit('lics'); storage.set('bcm_lics', JSON.stringify(lics)).catch(() => { }); try { localStorage.setItem('bcm_lics', JSON.stringify(lics)); } catch { } } }, [lics, loaded]);
-    useEffect(() => { if (loaded) { markLocalEdit('obras'); storage.set('bcm_obras', JSON.stringify(obras)).catch(() => { }); try { localStorage.setItem('bcm_obras', JSON.stringify(obras)); } catch { } } }, [obras, loaded]);
+    useEffect(() => {
+        if (!loaded) return;
+        markLocalEdit('obras');
+        // Guardar obras sin fotos/archivos para no superar el límite de 5MB
+        const obrasSinMedia = obras.map(o => ({ ...o, fotos: [], archivos: [] }));
+        storage.set('bcm_obras', JSON.stringify(obrasSinMedia)).catch(() => { });
+        try { localStorage.setItem('bcm_obras', JSON.stringify(obrasSinMedia)); } catch { }
+    }, [obras, loaded]);
     useEffect(() => { if (loaded) { markLocalEdit('personal'); storage.set('bcm_personal', JSON.stringify(personal)).catch(() => { }); try { localStorage.setItem('bcm_personal', JSON.stringify(personal)); } catch { } } }, [personal, loaded]);
     useEffect(() => { if (loaded) { markLocalEdit('cfg'); storage.set('bcm_cfg', JSON.stringify(cfg)).catch(() => { }); try { localStorage.setItem('bcm_cfg', JSON.stringify(cfg)); } catch { } } }, [cfg, loaded]);
     useEffect(() => {
@@ -3325,38 +3820,74 @@ function AppInner() {
     }, [apiKey, loaded]);
     useEffect(() => { if (loaded && user) { storage.set('bcm_current_user', JSON.stringify(user)).catch(() => { }); try { localStorage.setItem('bcm_current_user', JSON.stringify(user)); } catch { } } }, [user, loaded]);
 
-    // Sync tiempo real cada 3 segundos desde Supabase
-    // Solo aplica cambios remotos si NO hubo edición local en los últimos 4 segundos (evita pisarse a sí mismo)
+    // Sync tiempo real cada 5 segundos desde Supabase
+    // Solo aplica datos remotos si son distintos del local Y la ventana de protección expiró
     useEffect(() => {
         if (!loaded || !user) return;
-        const SYNC_MS = 3000;
-        const PROTECT_MS = 12000; // ventana de protección post-edición local (12s, suficiente para subir fotos grandes)
+        const SYNC_MS = 5000;
+        const PROTECT_MS = 15000; // 15s — suficiente para guardar fotos grandes
         async function sync() {
             try {
                 const now = Date.now();
+                // Leer desde Supabase (la fuente de verdad compartida)
                 const [rLics, rObras, rPers, rCfg] = await Promise.all([
                     storage.get('bcm_lics'),
                     storage.get('bcm_obras'),
                     storage.get('bcm_personal'),
                     storage.get('bcm_cfg'),
                 ]);
+
+                // Licitaciones
                 if (rLics?.value && now - lastLocalEditRef.current.lics > PROTECT_MS) {
-                    try { const nv = JSON.parse(rLics.value); setLics(cur => JSON.stringify(cur) !== rLics.value ? nv : cur); } catch { }
+                    const localLics = storage.getLocal('bcm_lics');
+                    if (localLics?.value !== rLics.value) {
+                        try { const nv = JSON.parse(rLics.value); setLics(nv); try { localStorage.setItem('bcm_lics', rLics.value); } catch {} } catch { }
+                    }
                 }
+
+                // Obras — preservar SIEMPRE fotos y archivos del local (nunca vienen en Supabase)
                 if (rObras?.value && now - lastLocalEditRef.current.obras > PROTECT_MS) {
-                    try { const nv = JSON.parse(rObras.value); setObras(cur => JSON.stringify(cur) !== rObras.value ? nv : cur); } catch { }
+                    const localObras = storage.getLocal('bcm_obras');
+                    if (localObras?.value !== rObras.value) {
+                        try {
+                            const obrasRemota = JSON.parse(rObras.value);
+                            setObras(cur => {
+                                return obrasRemota.map(o => {
+                                    const local = cur.find(x => x.id === o.id);
+                                    // Fotos y archivos SIEMPRE del local — nunca se sincronizan por Supabase
+                                    const fotos = local?.fotos?.length ? local.fotos : [];
+                                    const archivos = local?.archivos?.length ? local.archivos : [];
+                                    // Informes y obs: usar el más completo
+                                    const informes = (local?.informes?.length || 0) >= (o.informes?.length || 0) ? (local?.informes || []) : (o.informes || []);
+                                    const obs = (local?.obs?.length || 0) >= (o.obs?.length || 0) ? (local?.obs || []) : (o.obs || []);
+                                    const gastos = (local?.gastos?.length || 0) >= (o.gastos?.length || 0) ? (local?.gastos || []) : (o.gastos || []);
+                                    return { ...o, fotos, archivos, informes, obs, gastos };
+                                });
+                            });
+                            try { localStorage.setItem('bcm_obras', rObras.value); } catch {}
+                        } catch { }
+                    }
                 }
+
+                // Personal
                 if (rPers?.value && now - lastLocalEditRef.current.personal > PROTECT_MS) {
-                    try { const nv = JSON.parse(rPers.value); setPersonal(cur => JSON.stringify(cur) !== rPers.value ? nv : cur); } catch { }
+                    const localPers = storage.getLocal('bcm_personal');
+                    if (localPers?.value !== rPers.value) {
+                        try { const nv = JSON.parse(rPers.value); setPersonal(nv); try { localStorage.setItem('bcm_personal', rPers.value); } catch {} } catch { }
+                    }
                 }
+
+                // Config
                 if (rCfg?.value && now - lastLocalEditRef.current.cfg > PROTECT_MS) {
-                    try { const nv = JSON.parse(rCfg.value); setCfg(cur => JSON.stringify(cur) !== rCfg.value ? { ...DEFAULT_CONFIG, ...nv } : cur); } catch { }
+                    const localCfg = storage.getLocal('bcm_cfg');
+                    if (localCfg?.value !== rCfg.value) {
+                        try { const nv = JSON.parse(rCfg.value); setCfg({ ...DEFAULT_CONFIG, ...nv }); try { localStorage.setItem('bcm_cfg', rCfg.value); } catch {} } catch { }
+                    }
                 }
             } catch { }
         }
-        sync(); // sync inmediato
+        sync();
         const iv = setInterval(sync, SYNC_MS);
-        // También sincronizar cuando la ventana vuelve a foco
         const onFocus = () => sync();
         window.addEventListener('focus', onFocus);
         window.addEventListener('online', onFocus);
@@ -3493,6 +4024,7 @@ function AppInner() {
                 {view === 'info_externa' && <InfoExternaView setView={setView} cfg={cfg} />}
                 {view === 'gantt' && <GanttView obras={obras} setView={setView} cfg={cfg} />}
                 {view === 'informes_ia' && <InformesIA obras={obras} setObras={setObras} setView={setView} apiKey={apiKey} />}
+                {view === 'alertas_wa' && <AlertasWA cfg={cfg} personal={personal} lics={lics} obras={obras} alerts={alerts} setView={setView} />}
             </div>
             {showNav && <BottomNav view={view} setView={setView} alerts={alerts} cfg={cfg} />}
             {authRequest && <LoginModal titulo={authRequest.context || "Acceso requerido"} onSuccess={handleAuthSuccess} onClose={() => setAuthRequest(null)} />}
