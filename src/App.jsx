@@ -878,6 +878,136 @@ function TabInformes({ detail, upd }) {
 }
 
 // ── OBRAS ────────────────────────────────────────────────────────────
+// ── TAB GASTOS (dentro de cada Obra) ─────────────────────────────────
+const TIPOS_GASTO = [
+    { id: 'viatico', label: 'Viático', color: '#F59E0B', bg: '#FFFBEB' },
+    { id: 'compra', label: 'Compra material', color: '#3B82F6', bg: '#EFF6FF' },
+    { id: 'herramienta', label: 'Herramienta', color: '#8B5CF6', bg: '#F5F3FF' },
+    { id: 'subcontrato', label: 'Subcontrato', color: '#10B981', bg: '#ECFDF5' },
+    { id: 'combustible', label: 'Combustible', color: '#F97316', bg: '#FFF7ED' },
+    { id: 'otro', label: 'Otro', color: '#6B7280', bg: '#F9FAFB' },
+];
+
+function TabGastos({ detail, upd }) {
+    const [showNew, setShowNew] = useState(false);
+    const [form, setForm] = useState({ desc: '', tipo: 'viatico', monto: '', fecha: new Date().toLocaleDateString('es-AR'), quien: '', comprobante: null });
+    const compRef = useRef(null);
+    const gastos = detail.gastos || [];
+
+    const total = gastos.reduce((s, g) => s + parseMontoNum(g.monto), 0);
+    const porTipo = TIPOS_GASTO.map(t => ({ ...t, total: gastos.filter(g => g.tipo === t.id).reduce((s, g) => s + parseMontoNum(g.monto), 0) })).filter(t => t.total > 0);
+
+    async function handleComp(e) {
+        const f = e.target.files?.[0]; if (!f) return;
+        const url = await toDataUrl(f);
+        setForm(p => ({ ...p, comprobante: { url, nombre: f.name, ext: f.name.split('.').pop().toUpperCase() } }));
+        e.target.value = '';
+    }
+
+    function agregar() {
+        if (!form.desc.trim() || !form.monto) return;
+        const nuevo = { id: uid(), ...form };
+        upd(detail.id, { gastos: [...gastos, nuevo] });
+        setForm({ desc: '', tipo: 'viatico', monto: '', fecha: new Date().toLocaleDateString('es-AR'), quien: '', comprobante: null });
+        setShowNew(false);
+    }
+
+    function eliminar(id) { upd(detail.id, { gastos: gastos.filter(g => g.id !== id) }); }
+
+    return (<div>
+        {/* Resumen */}
+        <div style={{ background: T.navy, borderRadius: T.rsm, padding: "14px 16px", marginBottom: 14, color: "#fff" }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,.6)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Total gastos — {detail.nombre}</div>
+            <div style={{ fontSize: 26, fontWeight: 800 }}>${total.toLocaleString('es-AR')}</div>
+            {porTipo.length > 0 && <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                {porTipo.map(t => (
+                    <div key={t.id} style={{ background: "rgba(255,255,255,.1)", borderRadius: 8, padding: "4px 10px" }}>
+                        <div style={{ fontSize: 9, color: "rgba(255,255,255,.6)" }}>{t.label}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>${t.total.toLocaleString('es-AR')}</div>
+                    </div>
+                ))}
+            </div>}
+        </div>
+
+        <button onClick={() => setShowNew(true)} style={{ width: "100%", background: T.accent, border: "none", borderRadius: T.rsm, padding: "12px", fontSize: 13, fontWeight: 700, color: "#fff", cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M12 3.75a.75.75 0 01.75.75v6.75h6.75a.75.75 0 010 1.5h-6.75v6.75a.75.75 0 01-1.5 0v-6.75H4.5a.75.75 0 010-1.5h6.75V4.5a.75.75 0 01.75-.75z" /></svg>
+            Cargar gasto
+        </button>
+
+        {gastos.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "30px 0", color: T.muted, fontSize: 13 }}>Sin gastos registrados</div>
+        ) : (
+            [...gastos].reverse().map(g => {
+                const tipo = TIPOS_GASTO.find(t => t.id === g.tipo) || TIPOS_GASTO[5];
+                return (<div key={g.id} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "12px 14px", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                                <span style={{ background: tipo.bg, color: tipo.color, borderRadius: 20, padding: "2px 9px", fontSize: 10, fontWeight: 700, border: `1px solid ${tipo.color}22` }}>{tipo.label}</span>
+                                <span style={{ fontSize: 11, color: T.muted }}>{g.fecha}</span>
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{g.desc}</div>
+                            {g.quien && <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>👤 {g.quien}</div>}
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 10 }}>
+                            <div style={{ fontSize: 15, fontWeight: 800, color: T.accent }}>${parseMontoNum(g.monto).toLocaleString('es-AR')}</div>
+                        </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {g.comprobante && (
+                            <a href={g.comprobante.url} download={g.comprobante.nombre} style={{ textDecoration: "none", flex: 1 }}>
+                                <div style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px", display: "flex", alignItems: "center", gap: 6 }}>
+                                    <div style={{ width: 24, height: 24, borderRadius: 5, background: T.accentLight, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800 }}>{g.comprobante.ext}</div>
+                                    <span style={{ fontSize: 11, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.comprobante.nombre}</span>
+                                    <span style={{ fontSize: 10, color: T.accent, fontWeight: 600, marginLeft: "auto" }}>↓</span>
+                                </div>
+                            </a>
+                        )}
+                        <button onClick={() => eliminar(g.id)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer", fontWeight: 700, flexShrink: 0 }}>✕</button>
+                    </div>
+                </div>);
+            })
+        )}
+
+        {showNew && (<Sheet title="Cargar gasto" onClose={() => setShowNew(false)}>
+            <Field label="Descripción">
+                <TInput value={form.desc} onChange={e => setForm(p => ({ ...p, desc: e.target.value }))} placeholder="Ej: Cemento Portland 25kg" />
+            </Field>
+            <Lbl>Tipo de gasto</Lbl>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+                {TIPOS_GASTO.map(t => (
+                    <button key={t.id} onClick={() => setForm(p => ({ ...p, tipo: t.id }))} style={{ padding: "8px 4px", borderRadius: T.rsm, border: `1.5px solid ${form.tipo === t.id ? t.color : T.border}`, background: form.tipo === t.id ? t.bg : T.card, color: t.color, fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{t.label}</button>
+                ))}
+            </div>
+            <FieldRow>
+                <Field label="Monto ($)">
+                    <MontoInput value={form.monto} onChange={v => setForm(p => ({ ...p, monto: v }))} placeholder="0 $" />
+                </Field>
+                <Field label="Fecha">
+                    <TInput value={form.fecha} onChange={e => setForm(p => ({ ...p, fecha: e.target.value }))} placeholder="dd/mm/aa" />
+                </Field>
+            </FieldRow>
+            <Field label="Quién realizó el gasto (opcional)">
+                <TInput value={form.quien} onChange={e => setForm(p => ({ ...p, quien: e.target.value }))} placeholder="Nombre del trabajador" />
+            </Field>
+            <Field label="Comprobante (foto o PDF)">
+                <input ref={compRef} type="file" accept="image/*,.pdf" onChange={handleComp} style={{ display: "none" }} />
+                {form.comprobante ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: T.rsm, padding: "10px 12px" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#15803D", flex: 1 }}>✓ {form.comprobante.nombre}</div>
+                        <button onClick={() => setForm(p => ({ ...p, comprobante: null }))} style={{ background: "none", border: "none", color: "#EF4444", cursor: "pointer", fontSize: 14 }}>✕</button>
+                    </div>
+                ) : (
+                    <button onClick={() => compRef.current?.click()} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: T.rsm, padding: "11px", fontSize: 12, fontWeight: 600, color: T.sub, cursor: "pointer" }}>
+                        📎 Adjuntar comprobante
+                    </button>
+                )}
+            </Field>
+            <PBtn full onClick={agregar} disabled={!form.desc.trim() || !form.monto}>Guardar gasto</PBtn>
+        </Sheet>)}
+    </div>);
+}
+
 function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg, apiKey }) {
     const UBICS = getUbics(cfg);
     const [showNew, setShowNew] = useState(false);
@@ -924,7 +1054,7 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
                     <input type="range" min="0" max="100" value={detail.avance} onChange={e => upd(detail.id, { avance: parseInt(e.target.value) })} style={{ width: "100%", accentColor: "var(--accent,#1D4ED8)", marginTop: 10 }} />
                 </div>
                 <div style={{ background: T.card, borderBottom: `1px solid ${T.border}`, display: "flex", overflowX: "auto" }}>
-                    {[[`info`, t(cfg, 'obras_info')], [`obs`, t(cfg, 'obras_notas')], [`fotos`, t(cfg, 'obras_fotos')], [`archivos`, t(cfg, 'obras_archivos')], [`informes`, 'Informes']].map(([id, label]) => (
+                    {[[`info`, t(cfg, 'obras_info')], [`obs`, t(cfg, 'obras_notas')], [`fotos`, t(cfg, 'obras_fotos')], [`archivos`, t(cfg, 'obras_archivos')], [`informes`, 'Informes'], [`gastos`, 'Gastos']].map(([id, label]) => (
                         <button key={id} onClick={() => setTab(id)} style={{ flex: 1, minWidth: 52, padding: "10px 4px", background: "none", border: "none", fontSize: 11, fontWeight: tab === id ? 700 : 500, color: tab === id ? T.accent : T.muted, borderBottom: `2px solid ${tab === id ? "var(--accent,#1D4ED8)" : "transparent"}`, whiteSpace: "nowrap" }}>{label}</button>
                     ))}
                 </div>
@@ -986,6 +1116,7 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
                         {detail.archivos.length === 0 && <div style={{ textAlign: "center", padding: "32px 0", color: T.muted, fontSize: 13 }}>{t(cfg, 'obras_sin_archivos')}</div>}
                     </div>)}
                     {tab === "informes" && <TabInformes detail={detail} upd={upd} />}
+                    {tab === "gastos" && <TabGastos detail={detail} upd={upd} />}
                 </div>
             </div>
         );
@@ -1656,16 +1787,43 @@ function Presentismo({ personal, setPersonal, obras, setObras, currentUser, setV
 
 // ── ARCHIVOS · SEGUIMIENTO · RESUMEN ────────────────────────────────
 function Archivos({ setView }) {
-    const [files, setFiles] = useState([]); const [loaded, setLoaded] = useState(false); const inputRef = useRef(null);
-    useEffect(() => { (async () => { try { const r = await storage.get("bcm_archivos"); if (r?.value) setFiles(JSON.parse(r.value)); } catch { } setLoaded(true); })(); }, []);
-    useEffect(() => { if (loaded) storage.set("bcm_archivos", JSON.stringify(files)).catch(() => { }); }, [files, loaded]);
+    const [files, setFiles] = useState(() => {
+        try { const v = localStorage.getItem("bcm_archivos"); return v ? JSON.parse(v) : []; } catch { return []; }
+    });
+    const [loaded, setLoaded] = useState(false);
+    const inputRef = useRef(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const r = await storage.get("bcm_archivos");
+                if (r?.value) {
+                    const remoto = JSON.parse(r.value);
+                    // Usar el que tenga más archivos (el más completo)
+                    setFiles(local => remoto.length >= local.length ? remoto : local);
+                }
+            } catch { }
+            setLoaded(true);
+        })();
+    }, []);
+
+    // Guardar en localStorage inmediatamente + Supabase async
+    function guardar(nuevos) {
+        setFiles(nuevos);
+        try { localStorage.setItem("bcm_archivos", JSON.stringify(nuevos)); } catch { }
+        storage.set("bcm_archivos", JSON.stringify(nuevos)).catch(() => { });
+    }
+
     async function handleUp(e) {
+        const nuevos = [...files];
         for (const f of Array.from(e.target.files)) {
             const url = await toDataUrl(f);
-            setFiles(p => [...p, { id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" }]);
+            nuevos.push({ id: uid(), nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), url, fecha: new Date().toLocaleDateString("es-AR"), size: (f.size / 1024).toFixed(0) + "KB" });
         }
+        guardar(nuevos);
         e.target.value = "";
     }
+
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <AppHeader title="Archivos" back onBack={() => setView("mas")} right={<><input type="file" ref={inputRef} multiple onChange={handleUp} style={{ display: "none" }} /><PlusBtn onClick={() => inputRef.current?.click()} /></>} />
         <div style={{ padding: "12px 18px" }}>
@@ -1677,6 +1835,7 @@ function Archivos({ setView }) {
                         <div style={{ fontSize: 10, color: T.muted }}>{f.size} · {f.fecha}</div>
                     </div>
                     <a href={f.url} download={f.nombre} style={{ textDecoration: "none" }}><button style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, width: 30, height: 30, fontSize: 13, color: T.sub, cursor: "pointer" }}>↓</button></a>
+                    <button onClick={() => guardar(files.filter(x => x.id !== f.id))} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, width: 30, height: 30, fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
                 </div>))}
         </div>
     </div>);
@@ -3171,7 +3330,7 @@ function AppInner() {
     useEffect(() => {
         if (!loaded || !user) return;
         const SYNC_MS = 3000;
-        const PROTECT_MS = 4000; // ventana de protección post-edición local
+        const PROTECT_MS = 12000; // ventana de protección post-edición local (12s, suficiente para subir fotos grandes)
         async function sync() {
             try {
                 const now = Date.now();
