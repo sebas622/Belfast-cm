@@ -57,7 +57,61 @@ const storage = {
     }
 };
 
-// Hook genérico para módulos con su propio estado persistido
+// ── SUPABASE STORAGE (bucket bcm-media) ─────────────────────────────
+// Las fotos se suben como archivos reales al bucket público.
+// La URL pública reemplaza al base64 — reduce el egress drásticamente.
+const SUPA_BUCKET = "bcm-media";
+const SUPA_STORAGE_URL = SUPA_URL + "/storage/v1";
+
+const mediaStorage = {
+    // Subir un archivo (recibe dataURL base64) → devuelve URL pública
+    upload: async (path, dataUrl) => {
+        try {
+            // Convertir dataURL a Blob
+            const res = await fetch(dataUrl);
+            const blob = await res.blob();
+            const ext = blob.type.split('/')[1] || 'jpg';
+            const filePath = `${path}.${ext}`;
+
+            // Subir al bucket
+            const r = await fetch(`${SUPA_STORAGE_URL}/object/${SUPA_BUCKET}/${filePath}`, {
+                method: "POST",
+                headers: {
+                    "apikey": SUPA_KEY,
+                    "Authorization": "Bearer " + SUPA_KEY,
+                    "Content-Type": blob.type,
+                    "x-upsert": "true"
+                },
+                body: blob
+            });
+            if (!r.ok) return null;
+            // Devolver URL pública
+            return `${SUPA_STORAGE_URL}/object/public/${SUPA_BUCKET}/${filePath}`;
+        } catch { return null; }
+    },
+    // Eliminar archivo del bucket
+    remove: async (path) => {
+        try {
+            await fetch(`${SUPA_STORAGE_URL}/object/${SUPA_BUCKET}/${path}`, {
+                method: "DELETE",
+                headers: { "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY }
+            });
+        } catch { }
+    },
+    // Detectar si una URL es del bucket (ya subida) o base64 local
+    isRemoteUrl: (url) => url && (url.startsWith('http://') || url.startsWith('https://')),
+};
+
+// Wrapper que sube una foto al bucket y devuelve la URL pública.
+// Si falla el upload (sin internet, bucket no existe), devuelve el base64 como fallback.
+async function uploadFoto(dataUrl, carpeta, nombre) {
+    if (!dataUrl) return null;
+    // Si ya es URL remota, no re-subir
+    if (mediaStorage.isRemoteUrl(dataUrl)) return dataUrl;
+    const path = `${carpeta}/${nombre || uid()}`;
+    const remoteUrl = await mediaStorage.upload(path, dataUrl);
+    return remoteUrl || dataUrl; // fallback a base64 si falla
+}
 // Carga desde localStorage SINCRÓNICAMENTE (sin flash), persiste en ambos lados
 function useStoredState(key, defaultValue) {
     const [state, setState] = useState(() => {
@@ -492,6 +546,57 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
     </div>);
 }
 
+// DocMultiGrid: múltiples archivos por categoría (planos, pliegos, excel, otros)
+function DocMultiGrid({ docs, onUpload, onRemove, refs, prefix }) {
+    // docs es ahora un objeto { planos: [{id,nombre,url},...], pliego: [...], ... }
+    return (<div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {LIC_DOC_TYPES.map(d => {
+            const lista = Array.isArray(docs?.[d.id]) ? docs[d.id] : docs?.[d.id] ? [docs[d.id]] : [];
+            const rk = `${prefix}_${d.id}`;
+            return (<div key={d.id}>
+                <input type="file" accept={d.accept} multiple style={{ display: "none" }} ref={el => refs.current[rk] = el}
+                    onChange={async e => {
+                        for (const f of Array.from(e.target.files)) { await onUpload(d.id, f); }
+                        e.target.value = "";
+                    }} />
+                {/* Header de categoría + botón agregar */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#10B981" }} />
+                        <span style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{d.label}</span>
+                        {lista.length > 0 && <span style={{ fontSize: 10, color: T.muted }}>({lista.length})</span>}
+                    </div>
+                    <button onClick={() => refs.current[rk]?.click()} style={{ background: T.accentLight, border: `1px solid ${T.border}`, borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Agregar
+                    </button>
+                </div>
+                {/* Lista de archivos */}
+                {lista.length === 0 ? (
+                    <button onClick={() => refs.current[rk]?.click()} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: 10, padding: "10px", cursor: "pointer", textAlign: "center", color: T.muted, fontSize: 11 }}>
+                        Sin archivos — tocá para subir
+                    </button>
+                ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        {lista.map((f, i) => (
+                            <div key={f.id || i} style={{ display: "flex", alignItems: "center", gap: 8, background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 9, padding: "8px 10px" }}>
+                                <div style={{ width: 28, height: 28, borderRadius: 6, background: "#ECFDF5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                                    <span style={{ fontSize: 8, fontWeight: 800, color: "#15803D" }}>{(f.nombre || '').split('.').pop().toUpperCase().slice(0,4)}</span>
+                                </div>
+                                <span style={{ flex: 1, fontSize: 11, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.nombre}</span>
+                                <a href={f.url} download={f.nombre} style={{ textDecoration: "none", flexShrink: 0 }}>
+                                    <button style={{ background: "none", border: "1px solid #86EFAC", borderRadius: 6, padding: "4px 8px", fontSize: 10, color: "#15803D", fontWeight: 600, cursor: "pointer" }}>↓</button>
+                                </a>
+                                <button onClick={() => onRemove(d.id, f.id || i)} style={{ background: "none", border: "1px solid #FCA5A5", borderRadius: 6, padding: "4px 7px", fontSize: 10, color: "#EF4444", cursor: "pointer", flexShrink: 0 }}>✕</button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>);
+        })}
+    </div>);
+}
+
+// Mantener DocGrid viejo para compatibilidad con otros módulos que lo usen
 function DocGrid({ docs, onUpload, onRemove, refs, prefix }) {
     return (<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>{LIC_DOC_TYPES.map(d => {
         const doc = docs?.[d.id]; const rk = `${prefix}_${d.id}`; return (<div key={d.id}><input type="file" accept={d.accept} style={{ display: "none" }} ref={el => refs.current[rk] = el} onChange={async e => { if (e.target.files[0]) await onUpload(d.id, e.target.files[0]); e.target.value = ""; }} />
@@ -542,8 +647,39 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
         setShowNew(false);
     }
     function del(id) { setLics(p => p.filter(l => l.id !== id)); setShowDetail(null); }
-    async function handleDoc(licId, did, file) { const url = await toDataUrl(file); setLics(p => p.map(l => l.id === licId ? { ...l, docs: { ...(l.docs || {}), [did]: { nombre: file.name, url } } } : l)); }
-    async function handleNewDoc(did, file) { const url = await toDataUrl(file); setForm(f => ({ ...f, docs: { ...(f.docs || {}), [did]: { nombre: file.name, url } } })); }
+    // handleDoc: agrega un archivo a la lista de esa categoría (no reemplaza)
+    async function handleDoc(licId, did, file) {
+        const url = await toDataUrl(file);
+        const nuevo = { id: uid(), nombre: file.name, url };
+        setLics(p => p.map(l => {
+            if (l.id !== licId) return l;
+            const docsActuales = l.docs || {};
+            const listaActual = Array.isArray(docsActuales[did]) ? docsActuales[did] : docsActuales[did] ? [docsActuales[did]] : [];
+            return { ...l, docs: { ...docsActuales, [did]: [...listaActual, nuevo] } };
+        }));
+    }
+    async function handleNewDoc(did, file) {
+        const url = await toDataUrl(file);
+        const nuevo = { id: uid(), nombre: file.name, url };
+        setForm(f => {
+            const listaActual = Array.isArray(f.docs?.[did]) ? f.docs[did] : f.docs?.[did] ? [f.docs[did]] : [];
+            return { ...f, docs: { ...f.docs, [did]: [...listaActual, nuevo] } };
+        });
+    }
+    function removeDoc(licId, did, fileId) {
+        setLics(p => p.map(l => {
+            if (l.id !== licId) return l;
+            const docsActuales = l.docs || {};
+            const lista = Array.isArray(docsActuales[did]) ? docsActuales[did] : docsActuales[did] ? [docsActuales[did]] : [];
+            return { ...l, docs: { ...docsActuales, [did]: lista.filter((f, i) => (f.id || i) !== fileId) } };
+        }));
+    }
+    function removeNewDoc(did, fileId) {
+        setForm(f => {
+            const lista = Array.isArray(f.docs?.[did]) ? f.docs[did] : f.docs?.[did] ? [f.docs[did]] : [];
+            return { ...f, docs: { ...f.docs, [did]: lista.filter((x, i) => (x.id || i) !== fileId) } };
+        });
+    }
     const detail = showDetail ? lics.find(l => l.id === showDetail) : null;
 
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
@@ -594,7 +730,7 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
                 <Field label="Sector"><TInput value={form.sector} onChange={e => setForm(p => ({ ...p, sector: e.target.value }))} placeholder="Terminal A" /></Field>
             </FieldRow>
             <Field label="Fecha"><TInput value={form.fecha} onChange={e => setForm(p => ({ ...p, fecha: e.target.value }))} placeholder="dd/mm/aa" /></Field>
-            <div style={{ marginBottom: 14 }}><Lbl>Documentos</Lbl><DocGrid docs={form.docs} onUpload={handleNewDoc} onRemove={did => setForm(f => ({ ...f, docs: { ...f.docs, [did]: null } }))} refs={newDocRefs} prefix="new" /></div>
+            <div style={{ marginBottom: 14 }}><Lbl>Documentos</Lbl><DocMultiGrid docs={form.docs} onUpload={handleNewDoc} onRemove={(did, fileId) => removeNewDoc(did, fileId)} refs={newDocRefs} prefix="new" /></div>
             <PBtn full onClick={add} disabled={!form.nombre.trim()}>Crear licitación</PBtn>
         </Sheet>)}
         {detail && (<Sheet title={detail.nombre} onClose={() => setShowDetail(null)}>
@@ -611,7 +747,7 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
                 <Field label="Sector"><TInput value={detail.sector || ''} onChange={e => setLics(p => p.map(l => l.id === detail.id ? { ...l, sector: e.target.value } : l))} placeholder="Terminal A" /></Field>
                 <Field label="Fecha"><TInput value={detail.fecha || ''} onChange={e => setLics(p => p.map(l => l.id === detail.id ? { ...l, fecha: e.target.value } : l))} placeholder="dd/mm/aa" /></Field>
             </FieldRow>
-            <div style={{ marginBottom: 16 }}><Lbl>Documentos</Lbl><DocGrid docs={detail.docs || {}} onUpload={(did, file) => handleDoc(detail.id, did, file)} onRemove={did => setLics(p => p.map(l => l.id === detail.id ? { ...l, docs: { ...(l.docs || {}), [did]: null } } : l))} refs={docRefs} prefix={`det_${detail.id}`} /></div>
+            <div style={{ marginBottom: 16 }}><Lbl>Documentos</Lbl><DocMultiGrid docs={detail.docs || {}} onUpload={(did, file) => handleDoc(detail.id, did, file)} onRemove={(did, fileId) => removeDoc(detail.id, did, fileId)} refs={docRefs} prefix={`det_${detail.id}`} /></div>
             <Field label="Estado">
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                     {LIC_ESTADOS.map(e => (<button key={e.id} onClick={() => cambiarEstado(detail.id, e.id)} style={{ padding: "7px 4px", borderRadius: T.rsm, border: `1.5px solid ${detail.estado === e.id ? e.color : T.border}`, background: detail.estado === e.id ? e.bg : T.card, color: e.color, fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{e.label}</button>))}
@@ -634,9 +770,9 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
 
             {/* ── REGISTRO FOTOGRÁFICO DE VISITAS ────────────────────── */}
             <RegistroVisitas
+                licId={detail.id}
                 visitas={detail.visitas || []}
                 onUpdate={nuevasVisitas => {
-                    // Guardar fotos de visitas INMEDIATAMENTE en key separada
                     const key = `bcm_lic_vis_${detail.id}`;
                     const json = JSON.stringify(nuevasVisitas);
                     try { localStorage.setItem(key, json); } catch { }
@@ -657,28 +793,34 @@ const ETAPAS_VISITA = [
     { id: 'despues', label: 'Después', color: '#10B981', bg: '#ECFDF5' },
 ];
 
-function RegistroVisitas({ visitas, onUpdate }) {
+function RegistroVisitas({ visitas, onUpdate, licId }) {
     const camRef = useRef(null);
     const galRef = useRef(null);
     const [nuevaDesc, setNuevaDesc] = useState('');
     const [nuevaEtapa, setNuevaEtapa] = useState('antes');
     const [cargando, setCargando] = useState(false);
-    const [vistaFoto, setVistaFoto] = useState(null); // foto ampliada
+    const [vistaFoto, setVistaFoto] = useState(null);
     const [filtroEtapa, setFiltroEtapa] = useState('todas');
 
     async function subirFotos(e) {
         const files = Array.from(e.target.files);
         if (!files.length) return;
         setCargando(true);
-        const nuevas = await Promise.all(files.map(async f => ({
-            id: uid(),
-            url: await toDataUrl(f),
-            nombre: f.name,
-            desc: nuevaDesc.trim(),
-            etapa: nuevaEtapa,
-            fecha: new Date().toLocaleDateString('es-AR'),
-            hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
-        })));
+        const nuevas = await Promise.all(files.map(async f => {
+            const dataUrl = await toDataUrl(f);
+            const fotoId = uid();
+            // Subir al bucket Supabase Storage
+            const url = await uploadFoto(dataUrl, `licitaciones/${licId || 'general'}`, fotoId);
+            return {
+                id: fotoId,
+                url,
+                nombre: f.name,
+                desc: nuevaDesc.trim(),
+                etapa: nuevaEtapa,
+                fecha: new Date().toLocaleDateString('es-AR'),
+                hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+            };
+        }));
         onUpdate([...visitas, ...nuevas]);
         setNuevaDesc('');
         setCargando(false);
@@ -1161,15 +1303,23 @@ function Obras({ obras, setObras, lics, detailId, setDetailId, requireAuth, cfg,
         if (!detail) return;
         const files = Array.from(e.target.files);
         if (!files.length) return;
-        const nuevas = await Promise.all(files.map(async f => ({ id: uid(), url: await toDataUrl(f), nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") })));
+        const nuevas = await Promise.all(files.map(async f => {
+            const dataUrl = await toDataUrl(f);
+            const fotoId = uid();
+            // Subir al bucket — devuelve URL pública o base64 como fallback
+            const url = await uploadFoto(dataUrl, `obras/${detail.id}`, fotoId);
+            return { id: fotoId, url, nombre: f.name, fecha: new Date().toLocaleDateString("es-AR") };
+        }));
         upd(detail.id, { fotos: [...(detail.fotos || []), ...nuevas] });
         e.target.value = "";
     }
     async function handleArch(e) {
         if (!detail) return;
         for (const f of Array.from(e.target.files)) {
-            const url = await toDataUrl(f);
-            upd(detail.id, { archivos: [...detail.archivos, { id: uid(), url, nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), fecha: new Date().toLocaleDateString("es-AR") }] });
+            const dataUrl = await toDataUrl(f);
+            const archId = uid();
+            const url = await uploadFoto(dataUrl, `obras/${detail.id}/archivos`, archId);
+            upd(detail.id, { archivos: [...detail.archivos, { id: archId, url, nombre: f.name, ext: f.name.split(".").pop().toUpperCase(), fecha: new Date().toLocaleDateString("es-AR") }] });
         }
         e.target.value = "";
     }
@@ -1551,8 +1701,11 @@ function CargarView({ obras, setObras, cargarState, setCargarState, apiKey }) {
 
     async function handleFotos(e) {
         for (const f of Array.from(e.target.files)) {
-            const url = await toDataUrl(f);
-            setNewFotos(p => [...p, { id: uid(), url, nombre: f.name, fecha: new Date().toLocaleDateString('es-AR') }]);
+            const dataUrl = await toDataUrl(f);
+            const fotoId = uid();
+            // Subir al bucket — usar base64 localmente para el análisis IA, URL remota para guardar
+            const url = await uploadFoto(dataUrl, `obras/${obraId || 'general'}`, fotoId);
+            setNewFotos(p => [...p, { id: fotoId, url, urlLocal: dataUrl, nombre: f.name, fecha: new Date().toLocaleDateString('es-AR') }]);
         }
         e.target.value = '';
     }
@@ -1563,8 +1716,8 @@ function CargarView({ obras, setObras, cargarState, setCargarState, apiKey }) {
             const content = [];
             const prevLim = prevFotos.slice(-4);
             const newLim = newFotos.slice(0, 16); // máximo 16 nuevas para no exceder el límite de la API (20 imágenes por turno)
-            prevLim.forEach(f => { try { content.push({ type: 'image', source: { type: 'base64', media_type: getMediaType(f.url), data: getBase64(f.url) } }); } catch { } });
-            newLim.forEach(f => { try { content.push({ type: 'image', source: { type: 'base64', media_type: getMediaType(f.url), data: getBase64(f.url) } }); } catch { } });
+            prevLim.forEach(f => { try { const src = f.urlLocal || f.url; if (src.startsWith('data:')) content.push({ type: 'image', source: { type: 'base64', media_type: getMediaType(src), data: getBase64(src) } }); } catch { } });
+            newLim.forEach(f => { try { const src = f.urlLocal || f.url; if (src.startsWith('data:')) content.push({ type: 'image', source: { type: 'base64', media_type: getMediaType(src), data: getBase64(src) } }); } catch { } });
             const pTxt = prevFotos.length > 0 ? `Las primeras ${prevLim.length} imágenes son ANTERIORES y las siguientes ${newLim.length} son ACTUALES. Comparalas.` : `Las ${newLim.length} imágenes son del estado actual.`;
             const notaTruncado = newFotos.length > 16 ? `\n\n(Nota: se analizan solo 16 de las ${newFotos.length} fotos cargadas por límite de la API. El resto se guardará en la obra igualmente.)` : '';
             content.push({ type: 'text', text: `Generá informe de avance para "${obra.nombre}" (${AIRPORTS.find(a => a.id === obra.ap)?.code || obra.ap}). Avance: ${obra.avance}%. ${pTxt}${notaTruncado}
@@ -3066,9 +3219,14 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
 
     async function guardarEnObra(att, obraId) {
         if (att.isImage) {
-            setObras(p => p.map(o => o.id === obraId ? { ...o, fotos: [...(o.fotos || []), { id: uid(), url: att.url, nombre: att.name, fecha: new Date().toLocaleDateString('es-AR') }] } : o));
+            const fotoId = uid();
+            // Subir al bucket Supabase Storage para no guardar base64 en la DB
+            const url = await uploadFoto(att.url, `obras/${obraId}`, fotoId);
+            setObras(p => p.map(o => o.id === obraId ? { ...o, fotos: [...(o.fotos || []), { id: fotoId, url, nombre: att.name, fecha: new Date().toLocaleDateString('es-AR') }] } : o));
         } else {
-            setObras(p => p.map(o => o.id === obraId ? { ...o, archivos: [...(o.archivos || []), { id: uid(), url: att.url, nombre: att.name, ext: att.name.split('.').pop().toUpperCase(), fecha: new Date().toLocaleDateString('es-AR') }] } : o));
+            const archId = uid();
+            const url = await uploadFoto(att.url, `obras/${obraId}/archivos`, archId);
+            setObras(p => p.map(o => o.id === obraId ? { ...o, archivos: [...(o.archivos || []), { id: archId, url, nombre: att.name, ext: att.name.split('.').pop().toUpperCase(), fecha: new Date().toLocaleDateString('es-AR') }] } : o));
         }
         setShowSaveDialog(null);
     }
@@ -3843,53 +4001,71 @@ function AppInner() {
     const [authRequest, setAuthRequest] = useState(null);
     const [cargarState, setCargarState] = useState({ obraId: '', newFotos: [], report: '' });
 
-    // Cargar desde Supabase al inicio (sincroniza con la nube si hay datos más nuevos)
+    // Cargar datos al inicio
+    // PRIORIDAD: localStorage (siempre disponible) → luego Supabase si tiene datos más completos
     useEffect(() => {
         (async () => {
             try {
+                // 1. Ya tenemos los datos básicos de localStorage (cargados en useState())
+                // 2. Intentar enriquecer con Supabase — solo si Supabase tiene MÁS datos
                 const [rLics, rObras, rPers, rCfg, rKey, rUser] = await Promise.all([
                     storage.get('bcm_lics'), storage.get('bcm_obras'), storage.get('bcm_personal'),
                     storage.get('bcm_cfg'), storage.get('bcm_api_key'), storage.get('bcm_current_user'),
                 ]);
-                // Licitaciones — cargar visitas desde keys separadas
+
+                // Licitaciones — solo actualizar si Supabase tiene datos y son distintos
                 if (rLics?.value) try {
                     const licsBase = JSON.parse(rLics.value);
-                    const licsConVisitas = await Promise.all(licsBase.map(async l => {
-                        let visitas = l.visitas || [];
-                        try {
-                            const rv = await storage.get(`bcm_lic_vis_${l.id}`);
-                            if (rv?.value) {
-                                const remote = JSON.parse(rv.value);
-                                // Usar el más completo
-                                visitas = remote.length >= visitas.length ? remote : visitas;
-                            }
-                        } catch { }
-                        return { ...l, visitas };
-                    }));
-                    setLics(licsConVisitas);
+                    if (licsBase.length > 0) {
+                        // Cargar visitas: LOCAL tiene prioridad (pueden tener fotos que Supabase no)
+                        const licsConVisitas = await Promise.all(licsBase.map(async l => {
+                            // Visitas: buscar en localStorage primero, luego Supabase
+                            const localVis = storage.getLocal(`bcm_lic_vis_${l.id}`);
+                            let visitas = localVis?.value ? JSON.parse(localVis.value) : (l.visitas || []);
+                            try {
+                                const rv = await storage.get(`bcm_lic_vis_${l.id}`);
+                                if (rv?.value) {
+                                    const remoteVis = JSON.parse(rv.value);
+                                    // Usar el más completo (más fotos)
+                                    if (remoteVis.length > visitas.length) visitas = remoteVis;
+                                }
+                            } catch { }
+                            return { ...l, visitas };
+                        }));
+                        setLics(cur => licsConVisitas.length >= cur.length ? licsConVisitas : cur);
+                    }
                 } catch { }
-                // Obras — cargar fotos y archivos desde keys separadas
+
+                // Obras — cargar fotos desde local primero, Supabase como respaldo
                 if (rObras?.value) try {
                     const obrasBase = JSON.parse(rObras.value);
-                    const obrasConFotos = await Promise.all(obrasBase.map(async o => {
-                        let fotos = o.fotos || [];
-                        let archivos = o.archivos || [];
-                        try {
-                            const rf = await storage.get(`bcm_fotos_${o.id}`);
-                            if (rf?.value) fotos = JSON.parse(rf.value);
-                        } catch { }
-                        try {
-                            const ra = await storage.get(`bcm_archs_${o.id}`);
-                            if (ra?.value) archivos = JSON.parse(ra.value);
-                        } catch { }
-                        return { ...o, fotos, archivos };
-                    }));
-                    setObras(obrasConFotos);
+                    if (obrasBase.length > 0) {
+                        const obrasConFotos = await Promise.all(obrasBase.map(async o => {
+                            // Fotos: localStorage primero (es la fuente más confiable)
+                            const localFotos = storage.getLocal(`bcm_fotos_${o.id}`);
+                            let fotos = localFotos?.value ? JSON.parse(localFotos.value) : (o.fotos || []);
+                            const localArchs = storage.getLocal(`bcm_archs_${o.id}`);
+                            let archivos = localArchs?.value ? JSON.parse(localArchs.value) : (o.archivos || []);
+                            try {
+                                const rf = await storage.get(`bcm_fotos_${o.id}`);
+                                if (rf?.value) { const r = JSON.parse(rf.value); if (r.length > fotos.length) fotos = r; }
+                            } catch { }
+                            try {
+                                const ra = await storage.get(`bcm_archs_${o.id}`);
+                                if (ra?.value) { const r = JSON.parse(ra.value); if (r.length > archivos.length) archivos = r; }
+                            } catch { }
+                            return { ...o, fotos, archivos };
+                        }));
+                        setObras(cur => obrasConFotos.length >= cur.length ? obrasConFotos : cur);
+                    }
                 } catch { }
-                if (rPers?.value) try { setPersonal(JSON.parse(rPers.value)); } catch { }
+
+                // Personal, config, credenciales — Supabase como fuente de verdad compartida
+                if (rPers?.value) try { const nv = JSON.parse(rPers.value); setPersonal(cur => nv.length >= cur.length ? nv : cur); } catch { }
                 if (rCfg?.value) try { setCfg(c => ({ ...DEFAULT_CONFIG, ...JSON.parse(rCfg.value) })); } catch { }
                 if (rKey?.value && rKey.value.trim()) setApiKey(rKey.value);
                 if (rUser?.value) try { setUser(JSON.parse(rUser.value)); } catch { }
+
             } catch { }
             setLoaded(true);
         })();
@@ -4267,13 +4443,13 @@ function AppInner() {
             </div>
             {showNav && <BottomNav view={view} setView={setView} alerts={alerts} cfg={cfg} />}
             {/* Indicador de conexión en tiempo real — aparece brevemente cuando hay cambios */}
-            {showNav && (
+            {showNav && !realtimeOk && loaded && (
                 <div style={{ position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99, pointerEvents: "none" }}>
                     <div style={{ display: "flex", justifyContent: "center" }}>
-                        <div style={{ background: realtimeOk ? "rgba(16,185,129,.9)" : "rgba(107,114,128,.7)", borderRadius: 20, padding: "2px 10px", display: "flex", alignItems: "center", gap: 5, transition: "background .5s" }}>
-                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff", opacity: realtimeOk ? 1 : 0.5 }} />
+                        <div style={{ background: "rgba(239,68,68,.85)", borderRadius: 20, padding: "3px 12px", display: "flex", alignItems: "center", gap: 5 }}>
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff", animation: "pulse 1s infinite" }} />
                             <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", letterSpacing: "0.04em" }}>
-                                {realtimeOk ? "SYNC EN VIVO" : "SINCRONIZANDO…"}
+                                SIN SYNC EN TIEMPO REAL — datos locales guardados
                             </span>
                         </div>
                     </div>
