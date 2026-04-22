@@ -219,7 +219,7 @@ async function callAI(msgs, sys, apiKey, useSearch = false) {
 
         const body = {
             model: "claude-sonnet-4-20250514",
-            max_tokens: 3000,
+            max_tokens: useSearch ? 3000 : 1500, // sin búsqueda, respuesta más corta y rápida
             messages: msgs,
         };
         if (sys) body.system = sys;
@@ -635,7 +635,14 @@ function Licitaciones({ lics, setLics, requireAuth, cfg, obras, setObras }) {
             {/* ── REGISTRO FOTOGRÁFICO DE VISITAS ────────────────────── */}
             <RegistroVisitas
                 visitas={detail.visitas || []}
-                onUpdate={nuevasVisitas => setLics(p => p.map(l => l.id === detail.id ? { ...l, visitas: nuevasVisitas } : l))}
+                onUpdate={nuevasVisitas => {
+                    // Guardar fotos de visitas INMEDIATAMENTE en key separada
+                    const key = `bcm_lic_vis_${detail.id}`;
+                    const json = JSON.stringify(nuevasVisitas);
+                    try { localStorage.setItem(key, json); } catch { }
+                    storage.set(key, json).catch(() => { });
+                    setLics(p => p.map(l => l.id === detail.id ? { ...l, visitas: nuevasVisitas } : l));
+                }}
             />
 
             <PBtn full variant="danger" onClick={() => del(detail.id)} style={{ marginTop: 8 }}>Eliminar licitación</PBtn>
@@ -2851,12 +2858,25 @@ Tono profesional AA2000, español rioplatense.`;
 }
 
 // ── CHAT IA ────────────────────────────────────────────────────────
+// Límite de mensajes guardados: 60 (30 intercambios) — borra los más viejos automáticamente
+const CHAT_MAX_MSGS = 60;
+const CHAT_EXPIRE_MS = 60 * 60 * 1000; // 1 hora de inactividad → resetea
+
 function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
-    const [msgs, setMsgs] = useState([]);
+    // Cargar mensajes desde localStorage sincrónicamente
+    const [msgs, setMsgs] = useState(() => {
+        try {
+            const saved = localStorage.getItem('bcm_chat_msgs');
+            if (!saved) return [];
+            const { msgs: m, lastAt } = JSON.parse(saved);
+            // Si pasó más de 1 hora sin actividad, empezar de cero
+            if (Date.now() - lastAt > CHAT_EXPIRE_MS) return [];
+            return m || [];
+        } catch { return []; }
+    });
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [listening, setListening] = useState(false);
-    // Cargar el nombre desde localStorage SINCRÓNICAMENTE para evitar el "flash" de la pantalla de nombre
     const [userName, setUserName] = useState(() => {
         try { return localStorage.getItem('bcm_chat_user') || ''; } catch { return ''; }
     });
@@ -2864,14 +2884,41 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
         try { return !!localStorage.getItem('bcm_chat_user'); } catch { return false; }
     });
     const [chatLoaded, setChatLoaded] = useState(false);
-    const [attach, setAttach] = useState(null); // { url, name, type, isImage }
-    const [showSaveDialog, setShowSaveDialog] = useState(null); // el adjunto que se quiere guardar
+    const [attach, setAttach] = useState(null);
+    const [showSaveDialog, setShowSaveDialog] = useState(null);
     const [showAttachMenu, setShowAttachMenu] = useState(false);
     const scrollRef = useRef(null);
     const camRef = useRef(null);
     const galRef = useRef(null);
     const fileRef = useRef(null);
     const recognitionRef = useRef(null);
+
+    // Persistir mensajes cada vez que cambian
+    useEffect(() => {
+        if (msgs.length === 0) return;
+        try {
+            // Guardar solo los últimos CHAT_MAX_MSGS mensajes — sin fotos (muy pesadas)
+            const msgsLimpios = msgs.slice(-CHAT_MAX_MSGS).map(m => ({
+                ...m,
+                attach: m.attach?.isImage ? null : m.attach, // no guardar imágenes
+            }));
+            localStorage.setItem('bcm_chat_msgs', JSON.stringify({ msgs: msgsLimpios, lastAt: Date.now() }));
+        } catch { }
+    }, [msgs]);
+
+    // Función para agregar mensaje y persistir
+    function addMsg(msg) {
+        setMsgs(prev => {
+            const next = [...prev, msg];
+            return next;
+        });
+    }
+
+    // Botón para limpiar chat manualmente
+    function limpiarChat() {
+        setMsgs([]);
+        try { localStorage.removeItem('bcm_chat_msgs'); } catch { }
+    }
 
     // También consultar Supabase por si fue guardado desde otro dispositivo
     useEffect(() => {
@@ -2889,29 +2936,58 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
     }, []);
     useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [msgs]);
 
-    function buildContext() {
-        const totalObras = obras.length;
-        const obrasCurso = obras.filter(o => o.estado === 'curso');
-        const totalLics = lics.length;
-        const licsActivas = lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado));
-        return `Contexto BelfastCM en vivo:
-- Empresa: ${cfg.empresa || 'BelfastCM'}, ${cfg.cargo || ''}
-- Fecha actual: ${new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+    function buildContext(txt) {
+        // Contexto mínimo siempre
+        const base = `Empresa: ${cfg.empresa || 'BelfastCM'} · ${cfg.cargo || ''} · ${new Date().toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' })}`;
 
-OBRAS (${totalObras}, en curso ${obrasCurso.length}):
-${obras.map(o => `• ${o.nombre} [${AIRPORTS.find(a => a.id === o.ap)?.code || o.ap}/${o.sector || '-'}] · estado: ${o.estado} · avance: ${o.avance}% · inicio: ${o.inicio || '-'} · cierre: ${o.cierre || '-'} · presupuesto: ${o.monto || '-'} · pagado: ${o.pagado || 0} · observaciones: ${(o.obs || []).length}, fotos: ${(o.fotos || []).length}, informes: ${(o.informes || []).length}`).join('\n') || '(ninguna)'}
+        // Solo incluir detalles relevantes según la pregunta
+        const q = (txt || '').toLowerCase();
+        const quiereObras = /obra|avance|construc|sector|plazo|cierre/i.test(q);
+        const quiereLics = /licitac|presupuest|oferta|adjudic|visita/i.test(q);
+        const quierePersonal = /personal|trabajador|empleado|quien|equipo/i.test(q);
+        const quiereAlertas = /alerta|vencido|faltante|problema|urgente/i.test(q);
+        const quiereTodo = !quiereObras && !quiereLics && !quierePersonal && !quiereAlertas;
 
-LICITACIONES (${totalLics}, activas ${licsActivas.length}):
-${lics.map(l => `• ${l.nombre} [${AIRPORTS.find(a => a.id === l.ap)?.code}] · ${l.estado} · ${l.monto} · sector: ${l.sector || '-'} · fecha: ${l.fecha || '-'}`).join('\n') || '(ninguna)'}
+        let ctx = base + '\n';
 
-PERSONAL (${personal.length}):
-${personal.map(p => { const obraA = obras.find(o => o.id === p.obra_id); return `• ${p.nombre} (${p.rol}, ${p.empresa || 'BelfastCM'}) · tel: ${p.telefono || '-'} · obra: ${obraA?.nombre || 'sin asignar'} · tareas: ${(p.tareas || []).length} (pendientes: ${(p.tareas || []).filter(t => !t.done).length})`; }).join('\n') || '(ninguno)'}
+        if (quiereObras || quiereTodo) {
+            const obrasCurso = obras.filter(o => o.estado === 'curso');
+            ctx += `\nOBRAS en curso (${obrasCurso.length}/${obras.length}):\n`;
+            ctx += obrasCurso.slice(0, 8).map(o =>
+                `• ${o.nombre} · ${o.avance}% · cierre: ${o.cierre || '-'} · presupuesto: ${o.monto || '-'}`
+            ).join('\n') || '(ninguna)';
+        }
 
-ALERTAS (${alerts.length}):
-${alerts.map(a => `• [${a.prioridad}] ${a.msg}`).join('\n') || '(sin alertas)'}
+        if (quiereLics || quiereTodo) {
+            const licsActivas = lics.filter(l => !['adjudicada', 'descartada'].includes(l.estado));
+            ctx += `\nLICITACIONES activas (${licsActivas.length}):\n`;
+            ctx += licsActivas.slice(0, 6).map(l =>
+                `• ${l.nombre} · ${l.estado} · ${l.monto || '-'} · fecha: ${l.fecha || '-'}`
+            ).join('\n') || '(ninguna)';
+        }
 
-El usuario se llama: ${userName || 'desconocido'}.`;
+        if (quierePersonal || quiereTodo) {
+            ctx += `\nPERSONAL (${personal.length}):\n`;
+            ctx += personal.slice(0, 8).map(p => {
+                const obraA = obras.find(o => o.id === p.obra_id);
+                return `• ${p.nombre} (${p.rol}) · obra: ${obraA?.nombre || 'sin asignar'}`;
+            }).join('\n') || '(ninguno)';
+        }
+
+        if ((quiereAlertas || quiereTodo) && alerts.length > 0) {
+            ctx += `\nALERTAS (${alerts.length}):\n`;
+            ctx += alerts.slice(0, 6).map(a => `• [${a.prioridad}] ${a.msg}`).join('\n');
+        }
+
+        return ctx;
     }
+
+    // Detectar si la pregunta necesita búsqueda en internet
+    function necesitaBusqueda(txt) {
+        return /precio|costo|cuánto sale|cuanto vale|presupuest|material|proveedor|ferretería|ferreteria|mercadolibre|sodimac|easy|cemento|hierro|pintura|porcelanato|cotizaci|m2|metro cuadrado|mano de obra|jornal|honorario|norma|reglamento|código|decreto|resolución|pliego|inflaci|dólar|dolar|índice|índic|IPC|CAC/i.test(txt);
+    }
+
+    const [loadingMsg, setLoadingMsg] = useState('');
 
     async function enviar() {
         const txt = input.trim();
@@ -2931,43 +3007,42 @@ El usuario se llama: ${userName || 'desconocido'}.`;
         setInput(''); setAttach(null);
         setLoading(true);
 
-        const history = [...msgs, userMsg].map(m => {
+        const usarBusqueda = necesitaBusqueda(txt) || (attach?.isImage && /precio|costo|presupuest|cuánto/i.test(txt));
+
+        // Historial comprimido — solo últimos 8 mensajes (4 intercambios) para reducir tokens
+        const historialReciente = [...msgs, userMsg].slice(-8);
+        const history = historialReciente.map(m => {
             if (m.attach && m.role === 'user' && m.attach.isImage) {
                 return { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: getMediaType(m.attach.url), data: getBase64(m.attach.url) } }, { type: 'text', text: m.text || 'Analizá esta imagen' }] };
             }
-            const prefix = m.attach && !m.attach.isImage ? `[Archivo adjunto: ${m.attach.name}] ` : '';
+            const prefix = m.attach && !m.attach.isImage ? `[Archivo: ${m.attach.name}] ` : '';
             return { role: m.role, content: prefix + (m.text || '') };
         });
 
+        // Mostrar estado progresivo
+        if (usarBusqueda) {
+            setLoadingMsg('Buscando en internet…');
+        } else {
+            setLoadingMsg('Pensando…');
+        }
+
         let extraInfo = '';
-        if (/dólar|dolar|cotización/i.test(txt)) {
-            try { const r = await fetch('https://dolarapi.com/v1/dolares'); if (r.ok) { const d = await r.json(); extraInfo = '\n\nCotización dólar HOY: ' + d.slice(0, 4).map(x => `${x.nombre}: $${x.venta}`).join(', '); } } catch { }
+        if (/dólar|dolar/i.test(txt)) {
+            try { const r = await fetch('https://dolarapi.com/v1/dolares'); if (r.ok) { const d = await r.json(); extraInfo = '\nDólar HOY: ' + d.slice(0, 3).map(x => `${x.nombre}: $${x.venta}`).join(' · '); } } catch { }
         }
         if (/clima|lluvia|temperatura/i.test(txt)) {
-            try { const r = await fetch('https://wttr.in/Buenos+Aires?format=j1'); if (r.ok) { const d = await r.json(); const c = d.current_condition?.[0]; if (c) extraInfo += `\n\nClima Buenos Aires: ${c.temp_C}°C, ${c.lang_es?.[0]?.value || c.weatherDesc?.[0]?.value}, humedad ${c.humidity}%`; } } catch { }
+            try { const r = await fetch('https://wttr.in/Buenos+Aires?format=j1'); if (r.ok) { const d = await r.json(); const c = d.current_condition?.[0]; if (c) extraInfo += `\nClima BsAs: ${c.temp_C}°C, ${c.weatherDesc?.[0]?.value}`; } } catch { }
         }
 
-        const sys = `Sos el asistente IA de BelfastCM, la herramienta principal de trabajo de una empresa de construcción en aeropuertos AA2000 (AEP y EZE). Esta app reemplaza cualquier otra herramienta — el usuario no usa nada más que esta aplicación.
+        const sys = `Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.
+${buildContext(txt)}${extraInfo}
 
-Tenés acceso a búsqueda en internet en tiempo real. SIEMPRE buscá en internet cuando:
-- Te pregunten precios de materiales, mano de obra, m2 o presupuestos
-- El usuario quiera validar si un precio está bien (ej: "¿es correcto $900/m2 para oficinas?")
-- Te pidan proveedores, ferreterías o contactos en Argentina
-- Pregunten sobre normativas, decretos, pliegos o reglamentos
-- Cualquier información que pueda estar desactualizada
+Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párrafos salvo que pidan un informe detallado.${usarBusqueda ? ' Buscá en internet para dar precios y datos actualizados.' : ''}`;
 
-Cuando el usuario comparte un precio o presupuesto, SIEMPRE verificalo contra el mercado actual.
-
-Fuentes prioritarias: MercadoLibre Argentina, Revista Cifras de Arquitectura, Cámara Argentina de la Construcción, Sodimac, Easy, INDEC, BCRA.
-
-${buildContext()}${extraInfo}
-
-Respondé en español rioplatense, tono profesional pero cercano. Sé la herramienta más útil posible — no digas "no tengo acceso a internet", siempre intentá buscar.`;
-
-        // Siempre activo web_search — el modelo decide cuándo usarla
-        const r = await callAI(history, sys, apiKey, true);
+        const r = await callAI(history, sys, apiKey, usarBusqueda);
         setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
         setLoading(false);
+        setLoadingMsg('');
     }
 
     async function handleAttach(e) {
@@ -3025,7 +3100,13 @@ Respondé en español rioplatense, tono profesional pero cercano. Sé la herrami
 
     if (!askedName && !userName && msgs.length === 0) {
         return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <AppHeader title={cfg.tituloAsistente || 'Asistente IA'} sub={cfg.subtituloAsistente || 'Lee todos los datos de la app'} />
+            <AppHeader title={cfg.tituloAsistente || 'Asistente IA'} sub={cfg.subtituloAsistente || 'Lee todos los datos de la app'} right={
+                msgs.length > 0 ? (
+                    <button onClick={() => { if (window.confirm('¿Limpiar la conversación actual?')) limpiarChat(); }} style={{ background: 'none', border: `1px solid ${T.border}`, borderRadius: 8, padding: '5px 10px', fontSize: 11, color: T.muted, cursor: 'pointer', fontWeight: 600 }}>
+                        Nueva conversación
+                    </button>
+                ) : null
+            } />
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "30px", textAlign: "center" }}>
                 {cfg.logoAsistente ? <img src={cfg.logoAsistente} alt="" style={{ width: 90, height: 90, objectFit: "contain", marginBottom: 20 }} />
                     : <div style={{ width: 90, height: 90, borderRadius: "50%", background: `linear-gradient(135deg, ${T.accent}, ${T.navy})`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20, color: "#fff" }}>
@@ -3109,8 +3190,11 @@ Respondé en español rioplatense, tono profesional pero cercano. Sé la herrami
                         )}
                     </div>}
                 </div>))}
-                {loading && <div style={{ alignSelf: 'flex-start', padding: "9px 13px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, display: "flex", gap: 4 }}>
-                    {[0, .15, .3].map(d => <div key={d} style={{ width: 7, height: 7, borderRadius: "50%", background: T.muted, animation: `pulse 1.2s infinite ${d}s` }} />)}
+                {loading && <div style={{ alignSelf: 'flex-start', padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ display: "flex", gap: 4 }}>
+                        {[0, .15, .3].map(d => <div key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: `pulse 1.2s infinite ${d}s` }} />)}
+                    </div>
+                    {loadingMsg && <span style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{loadingMsg}</span>}
                 </div>}
             </div>)}
         </div>
@@ -3755,6 +3839,7 @@ function AppInner() {
     const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CONFIG, ...getLocalJSON('bcm_cfg', {}) }));
     const [apiKey, setApiKey] = useState(() => getLocalStr('bcm_api_key', ''));
     const [loaded, setLoaded] = useState(false);
+    const [realtimeOk, setRealtimeOk] = useState(false); // indicador de conexión en tiempo real
     const [authRequest, setAuthRequest] = useState(null);
     const [cargarState, setCargarState] = useState({ obraId: '', newFotos: [], report: '' });
 
@@ -3766,10 +3851,26 @@ function AppInner() {
                     storage.get('bcm_lics'), storage.get('bcm_obras'), storage.get('bcm_personal'),
                     storage.get('bcm_cfg'), storage.get('bcm_api_key'), storage.get('bcm_current_user'),
                 ]);
-                if (rLics?.value) try { setLics(JSON.parse(rLics.value)); } catch { }
+                // Licitaciones — cargar visitas desde keys separadas
+                if (rLics?.value) try {
+                    const licsBase = JSON.parse(rLics.value);
+                    const licsConVisitas = await Promise.all(licsBase.map(async l => {
+                        let visitas = l.visitas || [];
+                        try {
+                            const rv = await storage.get(`bcm_lic_vis_${l.id}`);
+                            if (rv?.value) {
+                                const remote = JSON.parse(rv.value);
+                                // Usar el más completo
+                                visitas = remote.length >= visitas.length ? remote : visitas;
+                            }
+                        } catch { }
+                        return { ...l, visitas };
+                    }));
+                    setLics(licsConVisitas);
+                } catch { }
+                // Obras — cargar fotos y archivos desde keys separadas
                 if (rObras?.value) try {
                     const obrasBase = JSON.parse(rObras.value);
-                    // Cargar fotos y archivos de cada obra desde sus keys separadas
                     const obrasConFotos = await Promise.all(obrasBase.map(async o => {
                         let fotos = o.fotos || [];
                         let archivos = o.archivos || [];
@@ -3799,7 +3900,23 @@ function AppInner() {
     function markLocalEdit(key) { lastLocalEditRef.current[key] = Date.now(); }
 
     // Persistir cambios — obras se guardan SIN fotos/archivos (esos van en keys separadas via upd())
-    useEffect(() => { if (loaded) { markLocalEdit('lics'); storage.set('bcm_lics', JSON.stringify(lics)).catch(() => { }); try { localStorage.setItem('bcm_lics', JSON.stringify(lics)); } catch { } } }, [lics, loaded]);
+    // Persistir lics SIN visitas (las fotos van en bcm_lic_vis_{id})
+    useEffect(() => {
+        if (!loaded) return;
+        markLocalEdit('lics');
+        const licsSinVisitas = lics.map(l => ({ ...l, visitas: [] }));
+        const json = JSON.stringify(licsSinVisitas);
+        storage.set('bcm_lics', json).catch(() => { });
+        try { localStorage.setItem('bcm_lics', json); } catch { }
+        // Guardar visitas de cada lic en su propia key
+        lics.forEach(l => {
+            if (!l.visitas?.length) return;
+            const key = `bcm_lic_vis_${l.id}`;
+            const vjson = JSON.stringify(l.visitas);
+            try { localStorage.setItem(key, vjson); } catch { }
+            storage.set(key, vjson).catch(() => { });
+        });
+    }, [lics, loaded]);
     useEffect(() => {
         if (!loaded) return;
         markLocalEdit('obras');
@@ -3820,78 +3937,200 @@ function AppInner() {
     }, [apiKey, loaded]);
     useEffect(() => { if (loaded && user) { storage.set('bcm_current_user', JSON.stringify(user)).catch(() => { }); try { localStorage.setItem('bcm_current_user', JSON.stringify(user)); } catch { } } }, [user, loaded]);
 
-    // Sync tiempo real cada 5 segundos desde Supabase
-    // Solo aplica datos remotos si son distintos del local Y la ventana de protección expiró
+    // ── SYNC TIEMPO REAL ─────────────────────────────────────────────────
+    // Usa Supabase Realtime (postgres_changes) para notificaciones instantáneas.
+    // Cuando dispositivo A guarda algo, dispositivo B lo recibe en < 1 segundo.
+    // Polling de respaldo cada 10s por si Realtime falla.
     useEffect(() => {
         if (!loaded || !user) return;
-        const SYNC_MS = 5000;
-        const PROTECT_MS = 15000; // 15s — suficiente para guardar fotos grandes
-        async function sync() {
+
+        // Keys de medios (fotos/archivos) — hay que buscarlas por prefijo
+        const MEDIA_PREFIXES = ['bcm_fotos_', 'bcm_archs_', 'bcm_lic_vis_'];
+        // Timestamp de la última vez que YO guardé algo (para no pisar mi propio cambio)
+        const myLastSave = { lics: 0, obras: 0, personal: 0, cfg: 0 };
+        const PROTECT_MS = 8000; // 8s protección post-guardado propio
+
+        // Función central: aplicar datos remotos a la UI
+        async function applyRemoteKey(key, value) {
+            const now = Date.now();
             try {
-                const now = Date.now();
-                // Leer desde Supabase (la fuente de verdad compartida)
-                const [rLics, rObras, rPers, rCfg] = await Promise.all([
-                    storage.get('bcm_lics'),
-                    storage.get('bcm_obras'),
-                    storage.get('bcm_personal'),
-                    storage.get('bcm_cfg'),
-                ]);
-
-                // Licitaciones
-                if (rLics?.value && now - lastLocalEditRef.current.lics > PROTECT_MS) {
-                    const localLics = storage.getLocal('bcm_lics');
-                    if (localLics?.value !== rLics.value) {
-                        try { const nv = JSON.parse(rLics.value); setLics(nv); try { localStorage.setItem('bcm_lics', rLics.value); } catch {} } catch { }
-                    }
+                if (key === 'bcm_lics' && now - myLastSave.lics > PROTECT_MS) {
+                    const licsRemota = JSON.parse(value);
+                    setLics(cur => licsRemota.map(l => {
+                        const local = cur.find(x => x.id === l.id);
+                        return { ...l, visitas: local?.visitas?.length ? local.visitas : l.visitas || [] };
+                    }));
+                    try { localStorage.setItem(key, value); } catch {}
                 }
-
-                // Obras — preservar SIEMPRE fotos y archivos del local (nunca vienen en Supabase)
-                if (rObras?.value && now - lastLocalEditRef.current.obras > PROTECT_MS) {
-                    const localObras = storage.getLocal('bcm_obras');
-                    if (localObras?.value !== rObras.value) {
-                        try {
-                            const obrasRemota = JSON.parse(rObras.value);
-                            setObras(cur => {
-                                return obrasRemota.map(o => {
-                                    const local = cur.find(x => x.id === o.id);
-                                    // Fotos y archivos SIEMPRE del local — nunca se sincronizan por Supabase
-                                    const fotos = local?.fotos?.length ? local.fotos : [];
-                                    const archivos = local?.archivos?.length ? local.archivos : [];
-                                    // Informes y obs: usar el más completo
-                                    const informes = (local?.informes?.length || 0) >= (o.informes?.length || 0) ? (local?.informes || []) : (o.informes || []);
-                                    const obs = (local?.obs?.length || 0) >= (o.obs?.length || 0) ? (local?.obs || []) : (o.obs || []);
-                                    const gastos = (local?.gastos?.length || 0) >= (o.gastos?.length || 0) ? (local?.gastos || []) : (o.gastos || []);
-                                    return { ...o, fotos, archivos, informes, obs, gastos };
-                                });
-                            });
-                            try { localStorage.setItem('bcm_obras', rObras.value); } catch {}
-                        } catch { }
-                    }
+                else if (key === 'bcm_obras' && now - myLastSave.obras > PROTECT_MS) {
+                    const obrasRemota = JSON.parse(value);
+                    setObras(cur => obrasRemota.map(o => {
+                        const local = cur.find(x => x.id === o.id);
+                        return {
+                            ...o,
+                            fotos:    local?.fotos?.length    ? local.fotos    : o.fotos    || [],
+                            archivos: local?.archivos?.length ? local.archivos : o.archivos || [],
+                            informes: (local?.informes?.length||0) >= (o.informes?.length||0) ? (local?.informes||[]) : (o.informes||[]),
+                            obs:      (local?.obs?.length||0)      >= (o.obs?.length||0)      ? (local?.obs||[])      : (o.obs||[]),
+                            gastos:   (local?.gastos?.length||0)   >= (o.gastos?.length||0)   ? (local?.gastos||[])   : (o.gastos||[]),
+                        };
+                    }));
+                    try { localStorage.setItem(key, value); } catch {}
                 }
-
-                // Personal
-                if (rPers?.value && now - lastLocalEditRef.current.personal > PROTECT_MS) {
-                    const localPers = storage.getLocal('bcm_personal');
-                    if (localPers?.value !== rPers.value) {
-                        try { const nv = JSON.parse(rPers.value); setPersonal(nv); try { localStorage.setItem('bcm_personal', rPers.value); } catch {} } catch { }
-                    }
+                else if (key === 'bcm_personal' && now - myLastSave.personal > PROTECT_MS) {
+                    const nv = JSON.parse(value); setPersonal(nv);
+                    try { localStorage.setItem(key, value); } catch {}
                 }
-
-                // Config
-                if (rCfg?.value && now - lastLocalEditRef.current.cfg > PROTECT_MS) {
-                    const localCfg = storage.getLocal('bcm_cfg');
-                    if (localCfg?.value !== rCfg.value) {
-                        try { const nv = JSON.parse(rCfg.value); setCfg({ ...DEFAULT_CONFIG, ...nv }); try { localStorage.setItem('bcm_cfg', rCfg.value); } catch {} } catch { }
-                    }
+                else if (key === 'bcm_cfg' && now - myLastSave.cfg > PROTECT_MS) {
+                    const nv = JSON.parse(value); setCfg({ ...DEFAULT_CONFIG, ...nv });
+                    try { localStorage.setItem(key, value); } catch {}
+                }
+                // Fotos de obras
+                else if (key.startsWith('bcm_fotos_')) {
+                    const obraId = key.replace('bcm_fotos_', '');
+                    const fotos = JSON.parse(value);
+                    setObras(cur => cur.map(o => o.id === obraId ? { ...o, fotos } : o));
+                    try { localStorage.setItem(key, value); } catch {}
+                }
+                // Archivos de obras
+                else if (key.startsWith('bcm_archs_')) {
+                    const obraId = key.replace('bcm_archs_', '');
+                    const archivos = JSON.parse(value);
+                    setObras(cur => cur.map(o => o.id === obraId ? { ...o, archivos } : o));
+                    try { localStorage.setItem(key, value); } catch {}
+                }
+                // Visitas de licitaciones
+                else if (key.startsWith('bcm_lic_vis_')) {
+                    const licId = key.replace('bcm_lic_vis_', '');
+                    const visitas = JSON.parse(value);
+                    setLics(cur => cur.map(l => l.id === licId ? { ...l, visitas } : l));
+                    try { localStorage.setItem(key, value); } catch {}
                 }
             } catch { }
         }
-        sync();
-        const iv = setInterval(sync, SYNC_MS);
-        const onFocus = () => sync();
+
+        // Función de sync completo (polling de respaldo)
+        async function syncAll() {
+            try {
+                const now = Date.now();
+                const [rLics, rObras, rPers, rCfg] = await Promise.all([
+                    storage.get('bcm_lics'), storage.get('bcm_obras'),
+                    storage.get('bcm_personal'), storage.get('bcm_cfg'),
+                ]);
+                if (rLics?.value) { const loc = storage.getLocal('bcm_lics'); if (loc?.value !== rLics.value) await applyRemoteKey('bcm_lics', rLics.value); }
+                if (rObras?.value) { const loc = storage.getLocal('bcm_obras'); if (loc?.value !== rObras.value) await applyRemoteKey('bcm_obras', rObras.value); }
+                if (rPers?.value) { const loc = storage.getLocal('bcm_personal'); if (loc?.value !== rPers.value) await applyRemoteKey('bcm_personal', rPers.value); }
+                if (rCfg?.value) { const loc = storage.getLocal('bcm_cfg'); if (loc?.value !== rCfg.value) await applyRemoteKey('bcm_cfg', rCfg.value); }
+
+                // Sync fotos/visitas de cada obra y licitación (media keys)
+                setObras(cur => {
+                    cur.forEach(async o => {
+                        try {
+                            const rf = await storage.get(`bcm_fotos_${o.id}`);
+                            if (rf?.value) { const loc = storage.getLocal(`bcm_fotos_${o.id}`); if (loc?.value !== rf.value) await applyRemoteKey(`bcm_fotos_${o.id}`, rf.value); }
+                        } catch {}
+                        try {
+                            const ra = await storage.get(`bcm_archs_${o.id}`);
+                            if (ra?.value) { const loc = storage.getLocal(`bcm_archs_${o.id}`); if (loc?.value !== ra.value) await applyRemoteKey(`bcm_archs_${o.id}`, ra.value); }
+                        } catch {}
+                    });
+                    return cur; // no cambiar el estado, solo leer
+                });
+                setLics(cur => {
+                    cur.forEach(async l => {
+                        try {
+                            const rv = await storage.get(`bcm_lic_vis_${l.id}`);
+                            if (rv?.value) { const loc = storage.getLocal(`bcm_lic_vis_${l.id}`); if (loc?.value !== rv.value) await applyRemoteKey(`bcm_lic_vis_${l.id}`, rv.value); }
+                        } catch {}
+                    });
+                    return cur;
+                });
+            } catch { }
+        }
+
+        // Supabase Realtime — escucha cambios en bcm_storage en tiempo real
+        let realtimeChannel = null;
+        let wsCleanup = null;
+
+        function connectRealtime() {
+            try {
+                // Supabase Realtime via WebSocket
+                const wsUrl = SUPA_URL.replace('https://', 'wss://') + '/realtime/v1/websocket?apikey=' + SUPA_KEY + '&vsn=1.0.0';
+                const ws = new WebSocket(wsUrl);
+                let heartbeat = null;
+
+                ws.onopen = () => {
+                    setRealtimeOk(true);
+                    // Suscribirse a cambios en la tabla bcm_storage
+                    ws.send(JSON.stringify({
+                        topic: 'realtime:public:bcm_storage',
+                        event: 'phx_join',
+                        payload: { config: { postgres_changes: [{ event: '*', schema: 'public', table: 'bcm_storage' }] } },
+                        ref: '1'
+                    }));
+                    // Heartbeat cada 25s para mantener la conexión
+                    heartbeat = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: 'hb' }));
+                        }
+                    }, 25000);
+                };
+
+                ws.onmessage = (evt) => {
+                    try {
+                        const msg = JSON.parse(evt.data);
+                        // Cambio en bcm_storage
+                        if (msg.event === 'postgres_changes' && msg.payload?.data) {
+                            const { record, old_record, type } = msg.payload.data;
+                            const changedKey = record?.key || old_record?.key;
+                            const changedValue = record?.value;
+                            if (changedKey && changedValue && type !== 'DELETE') {
+                                applyRemoteKey(changedKey, changedValue);
+                            }
+                        }
+                    } catch { }
+                };
+
+                ws.onclose = () => {
+                    setRealtimeOk(false);
+                    clearInterval(heartbeat);
+                    // Reconectar en 3s si la conexión se cayó
+                    setTimeout(() => { if (!wsCleanup?.closed) connectRealtime(); }, 3000);
+                };
+
+                ws.onerror = () => { ws.close(); };
+
+                wsCleanup = { ws, closed: false, close: () => { wsCleanup.closed = true; clearInterval(heartbeat); ws.close(); } };
+            } catch {
+                // Si WebSocket falla, solo usar polling
+            }
+        }
+
+        connectRealtime();
+
+        // Sync inicial + polling de respaldo cada 10s
+        syncAll();
+        const iv = setInterval(syncAll, 10000);
+        const onFocus = () => syncAll();
         window.addEventListener('focus', onFocus);
-        window.addEventListener('online', onFocus);
-        return () => { clearInterval(iv); window.removeEventListener('focus', onFocus); window.removeEventListener('online', onFocus); };
+        window.addEventListener('online', () => { syncAll(); connectRealtime(); });
+
+        // Interceptar el storage.set original para marcar mis propios cambios
+        const origSet = storage.set.bind(storage);
+        storage.set = async (key, value) => {
+            if (key === 'bcm_lics') myLastSave.lics = Date.now();
+            else if (key === 'bcm_obras') myLastSave.obras = Date.now();
+            else if (key === 'bcm_personal') myLastSave.personal = Date.now();
+            else if (key === 'bcm_cfg') myLastSave.cfg = Date.now();
+            return origSet(key, value);
+        };
+
+        return () => {
+            if (wsCleanup) wsCleanup.close();
+            clearInterval(iv);
+            window.removeEventListener('focus', onFocus);
+            storage.set = origSet; // restaurar
+        };
     }, [loaded, user]);
 
     // Generar alertas automáticas
@@ -4027,6 +4266,19 @@ function AppInner() {
                 {view === 'alertas_wa' && <AlertasWA cfg={cfg} personal={personal} lics={lics} obras={obras} alerts={alerts} setView={setView} />}
             </div>
             {showNav && <BottomNav view={view} setView={setView} alerts={alerts} cfg={cfg} />}
+            {/* Indicador de conexión en tiempo real — aparece brevemente cuando hay cambios */}
+            {showNav && (
+                <div style={{ position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99, pointerEvents: "none" }}>
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                        <div style={{ background: realtimeOk ? "rgba(16,185,129,.9)" : "rgba(107,114,128,.7)", borderRadius: 20, padding: "2px 10px", display: "flex", alignItems: "center", gap: 5, transition: "background .5s" }}>
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff", opacity: realtimeOk ? 1 : 0.5 }} />
+                            <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", letterSpacing: "0.04em" }}>
+                                {realtimeOk ? "SYNC EN VIVO" : "SINCRONIZANDO…"}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            )}
             {authRequest && <LoginModal titulo={authRequest.context || "Acceso requerido"} onSuccess={handleAuthSuccess} onClose={() => setAuthRequest(null)} />}
         </div>
     </>);
