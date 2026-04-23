@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, memo } from "react";
 
 // ── SUPABASE CONFIG ─────────────────────────────────────────────
-const SUPA_URL = "https://mvrznqpvreeskbmbaclg.supabase.co";
-const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12cnpucXB2cmVlc2tibWJhY2xnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTE4NjUsImV4cCI6MjA5MTU4Nzg2NX0.rOn31fHnUhMaAsAMUgEUwIwOMFNhLLLnW4L8rMNIGcE";
+const SUPA_URL = "https://gibfrivfjtjjijihaxwh.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpYmZyaXZmanRqamlqaWhheHdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NTgwOTIsImV4cCI6MjA5MjUzNDA5Mn0.gPOHrcQgjpspadROpAIlNbGlhRNi48sRiEr2BjJeQ-4";
 const SH = () => ({ "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY });
 
 // Storage adapter: Supabase (cloud) con fallback a localStorage
