@@ -485,6 +485,35 @@ function BottomNav({ view, setView, alerts, cfg }) {
 
 function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg, customIcons = {} }) {
     const UBICS = getUbics(cfg);
+    const [planes, setPlanes] = useStoredState('bcm_planes_semanales', []);
+    const [showNuevoPlan, setShowNuevoPlan] = useState(false);
+    const [planDetalle, setPlanDetalle] = useState(null);
+    const [formPlan, setFormPlan] = useState({ obra: '', semana: '', notas: '', dias: { lun: { activo: false, desde: '', hasta: '', tareas: '' }, mar: { activo: false, desde: '', hasta: '', tareas: '' }, mie: { activo: false, desde: '', hasta: '', tareas: '' }, jue: { activo: false, desde: '', hasta: '', tareas: '' }, vie: { activo: false, desde: '', hasta: '', tareas: '' }, sab: { activo: false, desde: '', hasta: '', tareas: '' }, dom: { activo: false, desde: '', hasta: '', tareas: '' } } });
+
+    const DIAS = [
+        { id: 'lun', label: 'Lunes' }, { id: 'mar', label: 'Martes' },
+        { id: 'mie', label: 'Miércoles' }, { id: 'jue', label: 'Jueves' },
+        { id: 'vie', label: 'Viernes' }, { id: 'sab', label: 'Sábado' },
+        { id: 'dom', label: 'Domingo' }
+    ];
+
+    // Semana actual
+    const hoy = new Date();
+    const diaSemana = hoy.getDay(); // 0=dom, 1=lun...
+    const diasHastaLunes = diaSemana === 0 ? 6 : diaSemana - 1;
+    const lunes = new Date(hoy); lunes.setDate(hoy.getDate() - diasHastaLunes);
+    const semanaActual = lunes.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+    function crearPlan() {
+        if (!formPlan.obra.trim()) return;
+        const nuevo = { id: uid(), ...formPlan, fechaCreacion: new Date().toLocaleDateString('es-AR') };
+        setPlanes(p => [nuevo, ...p]);
+        setShowNuevoPlan(false);
+        setFormPlan({ obra: '', semana: semanaActual, notas: '', dias: { lun: { activo: false, desde: '', hasta: '', tareas: '' }, mar: { activo: false, desde: '', hasta: '', tareas: '' }, mie: { activo: false, desde: '', hasta: '', tareas: '' }, jue: { activo: false, desde: '', hasta: '', tareas: '' }, vie: { activo: false, desde: '', hasta: '', tareas: '' }, sab: { activo: false, desde: '', hasta: '', tareas: '' }, dom: { activo: false, desde: '', hasta: '', tareas: '' } } });
+    }
+
+    const planActual = planDetalle ? planes.find(p => p.id === planDetalle) : null;
+
     return (<div style={{ flex: 1, overflowY: "auto", paddingBottom: 80 }}>
         <div style={{ background: T.navy, padding: "16px 18px 20px" }}>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,.6)", marginBottom: 3 }}>{t(cfg, 'dash_subtitulo')}</div>
@@ -500,30 +529,70 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
             </div>
         </div>
         <div style={{ padding: "14px 18px" }}>
+
+            {/* ── PLANES SEMANALES ─────────────────────────────── */}
+            <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        📋 Planes semanales ({planes.length})
+                    </div>
+                    <button onClick={() => { setFormPlan(f => ({ ...f, semana: semanaActual })); setShowNuevoPlan(true); }} style={{ background: T.accent, border: "none", borderRadius: 8, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
+                        + Nuevo plan
+                    </button>
+                </div>
+
+                {planes.length === 0 ? (
+                    <button onClick={() => { setFormPlan(f => ({ ...f, semana: semanaActual })); setShowNuevoPlan(true); }} style={{ width: "100%", background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: 12, padding: "18px", textAlign: "center", cursor: "pointer" }}>
+                        <div style={{ fontSize: 24, marginBottom: 6 }}>📋</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: T.sub }}>Crear primer plan semanal</div>
+                        <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>Organizá el trabajo por obra, día y horario</div>
+                    </button>
+                ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {planes.map(plan => {
+                            const diasActivos = DIAS.filter(d => plan.dias?.[d.id]?.activo);
+                            const obraObj = obras.find(o => o.id === plan.obra || o.nombre === plan.obra);
+                            return (<Card key={plan.id} onClick={() => setPlanDetalle(plan.id)} style={{ padding: "13px 14px", cursor: "pointer" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{obraObj?.nombre || plan.obra}</div>
+                                        <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>Semana del {plan.semana}</div>
+                                    </div>
+                                    <div style={{ background: T.accentLight, borderRadius: 8, padding: "4px 10px", textAlign: "center" }}>
+                                        <div style={{ fontSize: 13, fontWeight: 800, color: T.accent }}>{diasActivos.length}</div>
+                                        <div style={{ fontSize: 9, color: T.muted }}>días</div>
+                                    </div>
+                                </div>
+                                <div style={{ display: "flex", gap: 4 }}>
+                                    {DIAS.map(d => (
+                                        <div key={d.id} style={{ flex: 1, height: 4, borderRadius: 2, background: plan.dias?.[d.id]?.activo ? T.accent : T.border }} />
+                                    ))}
+                                </div>
+                                <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                                    {DIAS.map(d => (
+                                        <div key={d.id} style={{ flex: 1, fontSize: 7, color: plan.dias?.[d.id]?.activo ? T.accent : T.muted, textAlign: "center", fontWeight: plan.dias?.[d.id]?.activo ? 700 : 400 }}>
+                                            {d.label.slice(0, 1)}
+                                        </div>
+                                    ))}
+                                </div>
+                            </Card>);
+                        })}
+                    </div>
+                )}
+            </div>
+
+            {/* Alertas */}
             {alerts.length > 0 && (<div style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em" }}>Alertas ({alerts.length})</div>
                     <button onClick={() => setView("seguimiento")} style={{ fontSize: 12, color: T.accent, background: "none", border: "none", fontWeight: 600, cursor: "pointer" }}>Ver todas →</button>
                 </div>
-                {/* Alertas de alta prioridad primero */}
-                {alerts.filter(a => a.prioridad === 'alta').slice(0, 5).map(a => (
+                {alerts.filter(a => a.prioridad === 'alta').slice(0, 3).map(a => (
                     <div key={a.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
                         <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#EF4444", flexShrink: 0, marginTop: 4 }} />
                         <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5, flex: 1 }}>{a.msg}</div>
                     </div>
                 ))}
-                {/* Alertas medias (máx 4) */}
-                {alerts.filter(a => a.prioridad === 'media').slice(0, 4).map(a => (
-                    <div key={a.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
-                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0, marginTop: 4 }} />
-                        <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5, flex: 1 }}>{a.msg}</div>
-                    </div>
-                ))}
-                {alerts.filter(a => a.prioridad === 'media').length > 4 && (
-                    <button onClick={() => setView("seguimiento")} style={{ width: "100%", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "8px", fontSize: 12, color: "#92400E", fontWeight: 600, cursor: "pointer", textAlign: "center" }}>
-                        + {alerts.filter(a => a.prioridad === 'media').length - 4} alertas más → Ver seguimiento
-                    </button>
-                )}
             </div>)}
             {alerts.length === 0 && (
                 <div style={{ background: "#ECFDF5", border: "1px solid #86EFAC", borderRadius: 10, padding: "12px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
@@ -531,6 +600,8 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
                     <div style={{ fontSize: 12, color: "#15803D", fontWeight: 600 }}>✓ Todo en orden — sin alertas activas</div>
                 </div>
             )}
+
+            {/* Obras en curso */}
             <div style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T.sub, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t(cfg, 'dash_obras_curso')}</div>
@@ -543,6 +614,93 @@ function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, re
                 </Card>))}
             </div>
         </div>
+
+        {/* Sheet nuevo plan */}
+        {showNuevoPlan && (<Sheet title="Nuevo plan semanal" onClose={() => setShowNuevoPlan(false)}>
+            <Field label="Obra">
+                <Sel value={formPlan.obra} onChange={e => setFormPlan(f => ({ ...f, obra: e.target.value }))}>
+                    <option value="">Seleccionar obra...</option>
+                    {obras.map(o => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
+                    <option value="__otro">Otra / Proyecto nuevo</option>
+                </Sel>
+            </Field>
+            {formPlan.obra === '__otro' && (
+                <Field label="Nombre de la obra/proyecto">
+                    <TInput value={formPlan.obraCustom || ''} onChange={e => setFormPlan(f => ({ ...f, obraCustom: e.target.value, obra: e.target.value }))} placeholder="Ej: Refacción Suipacha 1234" />
+                </Field>
+            )}
+            <Field label="Semana (lunes de inicio)">
+                <TInput value={formPlan.semana} onChange={e => setFormPlan(f => ({ ...f, semana: e.target.value }))} placeholder="dd/mm/aaaa" />
+            </Field>
+
+            <div style={{ marginBottom: 14 }}>
+                <Lbl>Horarios y tareas por día</Lbl>
+                {DIAS.map(d => (<div key={d.id} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: formPlan.dias[d.id]?.activo ? 8 : 0 }}>
+                        <button onClick={() => setFormPlan(f => ({ ...f, dias: { ...f.dias, [d.id]: { ...f.dias[d.id], activo: !f.dias[d.id]?.activo } } }))}
+                            style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${formPlan.dias[d.id]?.activo ? T.accent : T.border}`, background: formPlan.dias[d.id]?.activo ? T.accent : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            {formPlan.dias[d.id]?.activo && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><path d="M4.5 12.75l6 6 9-13.5" /></svg>}
+                        </button>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: formPlan.dias[d.id]?.activo ? T.text : T.muted }}>{d.label}</span>
+                        {formPlan.dias[d.id]?.activo && (
+                            <div style={{ display: "flex", gap: 6, flex: 1 }}>
+                                <input type="time" value={formPlan.dias[d.id]?.desde || ''} onChange={e => setFormPlan(f => ({ ...f, dias: { ...f.dias, [d.id]: { ...f.dias[d.id], desde: e.target.value } } }))} style={{ flex: 1, background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 8px", fontSize: 12, color: T.text }} />
+                                <span style={{ color: T.muted, fontSize: 12, alignSelf: "center" }}>a</span>
+                                <input type="time" value={formPlan.dias[d.id]?.hasta || ''} onChange={e => setFormPlan(f => ({ ...f, dias: { ...f.dias, [d.id]: { ...f.dias[d.id], hasta: e.target.value } } }))} style={{ flex: 1, background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 8px", fontSize: 12, color: T.text }} />
+                            </div>
+                        )}
+                    </div>
+                    {formPlan.dias[d.id]?.activo && (
+                        <textarea value={formPlan.dias[d.id]?.tareas || ''} onChange={e => setFormPlan(f => ({ ...f, dias: { ...f.dias, [d.id]: { ...f.dias[d.id], tareas: e.target.value } } }))}
+                            placeholder="Tareas del día (una por línea)..."
+                            rows={2} style={{ width: "100%", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, color: T.text, resize: "none", marginLeft: 32 }} />
+                    )}
+                </div>))}
+            </div>
+            <Field label="Notas generales">
+                <textarea value={formPlan.notas} onChange={e => setFormPlan(f => ({ ...f, notas: e.target.value }))} placeholder="Observaciones, materiales necesarios, etc." rows={2} style={{ width: "100%", background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "8px 12px", fontSize: 13, color: T.text, resize: "none" }} />
+            </Field>
+            <PBtn full onClick={crearPlan} disabled={!formPlan.obra.trim()}>Crear plan semanal</PBtn>
+        </Sheet>)}
+
+        {/* Detalle del plan */}
+        {planActual && (<Sheet title={`Plan — ${planActual.obra}`} onClose={() => setPlanDetalle(null)}>
+            <div style={{ background: T.navy, borderRadius: T.rsm, padding: "12px 14px", marginBottom: 14, color: "#fff" }}>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,.6)", marginBottom: 2 }}>Semana del</div>
+                <div style={{ fontSize: 16, fontWeight: 800 }}>{planActual.semana}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
+                    {DIAS.filter(d => planActual.dias?.[d.id]?.activo).length} días de trabajo
+                </div>
+            </div>
+            {DIAS.filter(d => planActual.dias?.[d.id]?.activo).map(d => {
+                const dia = planActual.dias[d.id];
+                return (<div key={d.id} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "12px 14px", marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{d.label}</div>
+                        {dia.desde && dia.hasta && (
+                            <div style={{ background: T.accentLight, borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 700, color: T.accent }}>
+                                {dia.desde} — {dia.hasta}
+                            </div>
+                        )}
+                    </div>
+                    {dia.tareas && (
+                        <div style={{ fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                            {dia.tareas.split('\n').map((t, i) => t.trim() && (
+                                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, flexShrink: 0, marginTop: 5 }} />
+                                    <span>{t}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>);
+            })}
+            {planActual.notas && (<div style={{ background: T.bg, borderRadius: T.rsm, padding: "12px 14px", marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.sub, marginBottom: 6, textTransform: "uppercase" }}>Notas</div>
+                <div style={{ fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{planActual.notas}</div>
+            </div>)}
+            <PBtn full variant="danger" onClick={() => { setPlanes(p => p.filter(x => x.id !== planActual.id)); setPlanDetalle(null); }}>Eliminar plan</PBtn>
+        </Sheet>)}
     </div>);
 }
 
@@ -3248,13 +3406,110 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
     function startListening() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) { alert('Tu navegador no soporta reconocimiento de voz'); return; }
+        // Cancelar cualquier voz que esté sonando
+        window.speechSynthesis?.cancel();
         const rec = new SR();
-        rec.lang = 'es-AR'; rec.continuous = false; rec.interimResults = false;
-        rec.onresult = e => { const transcript = e.results[0][0].transcript; setInput(p => p + ' ' + transcript); setListening(false); };
-        rec.onend = () => setListening(false); rec.onerror = () => setListening(false);
-        rec.start(); recognitionRef.current = rec; setListening(true);
+        rec.lang = 'es-AR';
+        rec.continuous = false;
+        rec.interimResults = false;
+        rec.onresult = e => {
+            const transcript = e.results[0][0].transcript;
+            setInput(transcript);
+            setListening(false);
+            // Auto-enviar después de 600ms (tiempo para que el usuario vea lo que dijo)
+            setTimeout(() => {
+                setInput(t => {
+                    if (t.trim()) {
+                        // Disparar envío con el transcript
+                        enviarConTexto(transcript);
+                        return '';
+                    }
+                    return t;
+                });
+            }, 600);
+        };
+        rec.onend = () => setListening(false);
+        rec.onerror = () => setListening(false);
+        rec.start();
+        recognitionRef.current = rec;
+        setListening(true);
     }
+
     function stopListening() { recognitionRef.current?.stop(); setListening(false); }
+
+    // Leer respuesta en voz alta
+    function hablarTexto(texto) {
+        if (!window.speechSynthesis) return;
+        window.speechSynthesis.cancel();
+        // Limpiar markdown para que suene natural
+        const limpio = texto
+            .replace(/\*\*(.*?)\*\*/g, '$1')
+            .replace(/\*(.*?)\*/g, '$1')
+            .replace(/#{1,6}\s/g, '')
+            .replace(/`(.*?)`/g, '$1')
+            .replace(/\n+/g, '. ')
+            .slice(0, 800); // máximo 800 chars para no hacer muy larga la respuesta
+        const utt = new SpeechSynthesisUtterance(limpio);
+        utt.lang = 'es-AR';
+        utt.rate = 1.05;
+        utt.pitch = 1;
+        // Buscar voz en español
+        const voces = window.speechSynthesis.getVoices();
+        const vozES = voces.find(v => v.lang.startsWith('es')) || voces[0];
+        if (vozES) utt.voice = vozES;
+        window.speechSynthesis.speak(utt);
+    }
+
+    // Enviar con texto específico (para auto-envío por voz)
+    async function enviarConTexto(txt) {
+        if (!txt?.trim()) return;
+        if (!askedName && !userName) {
+            setMsgs(p => [...p, { id: uid(), role: 'user', text: txt }]);
+            setUserName(txt);
+            setAskedName(true);
+            try { await storage.set('bcm_chat_user', txt); } catch { }
+            try { localStorage.setItem('bcm_chat_user', txt); } catch { }
+            const resp = `Hola ${txt}, soy tu asistente IA para BelfastCM. Tengo acceso en tiempo real a todas tus obras, licitaciones, personal y alertas. ¿En qué puedo ayudarte?`;
+            setTimeout(() => {
+                setMsgs(p => [...p, { id: uid(), role: 'assistant', text: resp }]);
+                hablarTexto(resp);
+            }, 400);
+            return;
+        }
+        const userMsg = { id: uid(), role: 'user', text: txt, attach };
+        setMsgs(p => [...p, userMsg]);
+        setAttach(null);
+        setLoading(true);
+        setLoadingMsg('Pensando…');
+
+        const historialReciente = [...msgs, userMsg].slice(-8);
+        const history = historialReciente.map(m => {
+            if (m.attach && m.role === 'user' && m.attach.isImage) {
+                return { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: getMediaType(m.attach.url), data: getBase64(m.attach.url) } }, { type: 'text', text: m.text || 'Analizá esta imagen' }] };
+            }
+            return { role: m.role, content: (m.attach && !m.attach.isImage ? `[Archivo: ${m.attach.name}] ` : '') + (m.text || '') };
+        });
+
+        const usarBusqueda = true;
+        if (usarBusqueda) setLoadingMsg('Buscando en internet…');
+
+        let extraInfo = '';
+        if (/dólar|dolar/i.test(txt)) {
+            try { const r = await fetch('https://dolarapi.com/v1/dolares'); if (r.ok) { const d = await r.json(); extraInfo = '\nDólar HOY: ' + d.slice(0, 3).map(x => `${x.nombre}: $${x.venta}`).join(' · '); } } catch { }
+        }
+
+        const sys = `Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.
+${buildContext(txt)}${extraInfo}
+
+Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párrafos. IMPORTANTE: Tenés acceso a búsqueda en internet en tiempo real. Nunca digas que no tenés acceso a internet.`;
+
+        const r = await callAI(history, sys, apiKey, usarBusqueda);
+        setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
+        setLoading(false);
+        setLoadingMsg('');
+        // Leer la respuesta en voz alta automáticamente
+        hablarTexto(r);
+    }
 
     if (!askedName && !userName && msgs.length === 0) {
         return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
