@@ -4698,7 +4698,7 @@ function AppInner() {
             </div>
             {showNav && <BottomNav view={view} setView={setView} alerts={alerts} cfg={cfg} />}
             {/* Indicador de conexión en tiempo real — aparece brevemente cuando hay cambios */}
-            {showNav && !realtimeOk && loaded && (
+            {showNav && !realtimeOk && loaded && user && false && (
                 <div style={{ position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99, pointerEvents: "none" }}>
                     <div style={{ display: "flex", justifyContent: "center" }}>
                         <div style={{ background: "rgba(239,68,68,.85)", borderRadius: 20, padding: "3px 12px", display: "flex", alignItems: "center", gap: 5 }}>
