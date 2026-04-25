@@ -483,9 +483,8 @@ function BottomNav({ view, setView, alerts, cfg }) {
     </nav>);
 }
 
-function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg, customIcons = {} }) {
+function Dashboard({ lics, obras, personal, alerts, setView, setDetailObraId, requireAuth, cfg, customIcons = {}, planes, setPlanes }) {
     const UBICS = getUbics(cfg);
-    const [planes, setPlanes] = useStoredState('bcm_planes_semanales', []);
     const [showNuevoPlan, setShowNuevoPlan] = useState(false);
     const [planDetalle, setPlanDetalle] = useState(null);
     const [formPlan, setFormPlan] = useState({ obra: '', semana: '', notas: '', dias: { lun: { activo: false, desde: '', hasta: '', tareas: '' }, mar: { activo: false, desde: '', hasta: '', tareas: '' }, mie: { activo: false, desde: '', hasta: '', tareas: '' }, jue: { activo: false, desde: '', hasta: '', tareas: '' }, vie: { activo: false, desde: '', hasta: '', tareas: '' }, sab: { activo: false, desde: '', hasta: '', tareas: '' }, dom: { activo: false, desde: '', hasta: '', tareas: '' } } });
@@ -4248,6 +4247,7 @@ function AppInner() {
     const [lics, setLics] = useState(() => getLocalJSON('bcm_lics', []));
     const [obras, setObras] = useState(() => getLocalJSON('bcm_obras', []));
     const [personal, setPersonal] = useState(() => getLocalJSON('bcm_personal', []));
+    const [planes, setPlanes] = useStoredState('bcm_planes_semanales', []);
     const [alerts, setAlerts] = useState([]);
     const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CONFIG, ...getLocalJSON('bcm_cfg', {}) }));
     const [apiKey, setApiKey] = useState(() => getLocalStr('bcm_api_key', ''));
@@ -4437,6 +4437,11 @@ function AppInner() {
                     setLics(cur => cur.map(l => l.id === licId ? { ...l, visitas } : l));
                     try { localStorage.setItem(key, value); } catch {}
                 }
+                else if (key === 'bcm_planes_semanales') {
+                    const nv = JSON.parse(value);
+                    setPlanes(nv);
+                    try { localStorage.setItem(key, value); } catch {}
+                }
             } catch { }
         }
 
@@ -4444,14 +4449,25 @@ function AppInner() {
         async function syncAll() {
             try {
                 const now = Date.now();
-                const [rLics, rObras, rPers, rCfg] = await Promise.all([
+                const [rLics, rObras, rPers, rCfg, rPlanes] = await Promise.all([
                     storage.get('bcm_lics'), storage.get('bcm_obras'),
                     storage.get('bcm_personal'), storage.get('bcm_cfg'),
+                    storage.get('bcm_planes_semanales'),
                 ]);
                 if (rLics?.value) { const loc = storage.getLocal('bcm_lics'); if (loc?.value !== rLics.value) await applyRemoteKey('bcm_lics', rLics.value); }
                 if (rObras?.value) { const loc = storage.getLocal('bcm_obras'); if (loc?.value !== rObras.value) await applyRemoteKey('bcm_obras', rObras.value); }
                 if (rPers?.value) { const loc = storage.getLocal('bcm_personal'); if (loc?.value !== rPers.value) await applyRemoteKey('bcm_personal', rPers.value); }
                 if (rCfg?.value) { const loc = storage.getLocal('bcm_cfg'); if (loc?.value !== rCfg.value) await applyRemoteKey('bcm_cfg', rCfg.value); }
+                // Sync planes semanales
+                if (rPlanes?.value) {
+                    const loc = storage.getLocal('bcm_planes_semanales');
+                    if (loc?.value !== rPlanes.value) {
+                        try {
+                            const nv = JSON.parse(rPlanes.value);
+                            try { localStorage.setItem('bcm_planes_semanales', rPlanes.value); } catch {}
+                        } catch {}
+                    }
+                }
 
                 // Sync fotos/visitas de cada obra y licitación (media keys)
                 setObras(cur => {
@@ -4672,7 +4688,7 @@ function AppInner() {
         <div style={{ width: "100%", maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: T.bg, display: "flex", flexDirection: "column", position: "relative", color: T.text, fontFamily: "var(--font), sans-serif" }}>
             <AppBrand cfg={cfg} />
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingBottom: showNav ? 72 : 0 }}>
-                {view === 'dashboard' && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={setView} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} customIcons={cfg.customIcons || {}} />}
+                {view === 'dashboard' && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={setView} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} customIcons={cfg.customIcons || {}} planes={planes} setPlanes={setPlanes} />}
                 {view === 'obras' && <Obras obras={obras} setObras={setObras} lics={lics} detailId={detailObraId} setDetailId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} apiKey={apiKey} />}
                 {view === 'licitaciones' && <Licitaciones lics={lics} setLics={setLics} requireAuth={requireAuth} cfg={cfg} obras={obras} setObras={setObras} />}
                 {view === 'personal' && <Personal personal={personal} setPersonal={setPersonal} obras={obras} cfg={cfg} />}
