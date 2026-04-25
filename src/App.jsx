@@ -3379,21 +3379,28 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
                         rol: accion.datos.rol || 'Operario',
                         empresa: accion.datos.empresa || 'BelfastCM',
                         telefono: accion.datos.telefono || '',
-                        foto: '',
-                        obra_id: '',
-                        tareas: [],
-                        docs: {},
+                        foto: '', obra_id: '', tareas: [], docs: {},
                         _dni: accion.datos.dni || '',
                         _fechaNac: accion.datos.fechaNac || '',
                     };
                     setPersonal(p => [...p, nuevaPersona]);
-                    mensajeExtra = '\n\n✅ **' + accion.datos.nombre + '** agregado al personal. Podés verlo en la sección Personal.';
+                    mensajeExtra = '\n\n✅ ' + accion.datos.nombre + ' agregado al personal.';
                 }
-                else if (accion.tipo === 'update_obra' && accion.obraId) {
+                if (accion.tipo === 'update_obra' && accion.obraId) {
                     setObras(p => p.map(o => o.id === accion.obraId ? { ...o, [accion.campo]: accion.valor } : o));
                     mensajeExtra = '\n\n✅ Obra actualizada.';
                 }
             } catch { }
+        } else {
+            // Fallback: la IA dijo que agregó pero no puso el ACTION
+            const nm = textoLimpio.match(/agregu[eé] a ([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?: [A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i) ||
+                       textoLimpio.match(/carg[uú]é? a ([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?: [A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
+            const rm = textoLimpio.match(/como ([a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s[a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)/i);
+            if (nm && textoLimpio.toLowerCase().includes('personal')) {
+                const nueva = { id: uid(), nombre: nm[1], rol: rm ? rm[1] : 'Operario', empresa: 'BelfastCM', telefono: '', foto: '', obra_id: '', tareas: [], docs: {} };
+                setPersonal(p => [...p, nueva]);
+                mensajeExtra = '\n\n✅ ' + nm[1] + ' agregado al personal.';
+            }
         }
 
         setMsgs(p => [...p, { id: uid(), role: 'assistant', text: textoLimpio + mensajeExtra }]);
@@ -3568,9 +3575,27 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
                 if (accion.tipo === 'agregar_personal' && accion.datos?.nombre) {
                     const nueva = { id: uid(), nombre: accion.datos.nombre, rol: accion.datos.rol || 'Operario', empresa: accion.datos.empresa || 'BelfastCM', telefono: accion.datos.telefono || '', foto: '', obra_id: '', tareas: [], docs: {}, _dni: accion.datos.dni || '', _fechaNac: accion.datos.fechaNac || '' };
                     setPersonal(p => [...p, nueva]);
-                    textoFinal += '\n\n✅ ' + accion.datos.nombre + ' agregado al personal.';
+                    textoFinal += '\n\n✅ ' + accion.datos.nombre + ' agregado al personal correctamente.';
                 }
-            } catch { }
+                if (accion.tipo === 'update_obra' && accion.obraId) {
+                    setObras(p => p.map(o => o.id === accion.obraId ? { ...o, [accion.campo]: accion.valor } : o));
+                    textoFinal += '\n\n✅ Obra actualizada.';
+                }
+            } catch(e) {
+                textoFinal += '\n\n⚠️ Error al ejecutar acción: ' + e.message;
+            }
+        } else {
+            // La IA dijo que hizo algo pero no incluyó el ACTION — detectar y agregar manualmente
+            const nombreMatch = r.match(/agregu[eé] a ([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?: [A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i) ||
+                                r.match(/cargué? a ([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?: [A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
+            const rolMatch = r.match(/como ([a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s[a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)/i);
+            if (nombreMatch && r.toLowerCase().includes('personal')) {
+                const nombre = nombreMatch[1];
+                const rol = rolMatch ? rolMatch[1] : 'Operario';
+                const nueva = { id: uid(), nombre, rol, empresa: 'BelfastCM', telefono: '', foto: '', obra_id: '', tareas: [], docs: {} };
+                setPersonal(p => [...p, nueva]);
+                textoFinal += '\n\n✅ ' + nombre + ' agregado al personal.';
+            }
         }
         setMsgs(p => [...p, { id: uid(), role: 'assistant', text: textoFinal }]);
         setLoading(false);
