@@ -3,7 +3,12 @@ import React, { useState, useRef, useEffect, useCallback, memo } from "react";
 // ── SUPABASE CONFIG ─────────────────────────────────────────────
 const SUPA_URL = "https://gibfrivfjtjjijihaxwh.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpYmZyaXZmanRqamlqaWhheHdoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NTgwOTIsImV4cCI6MjA5MjUzNDA5Mn0.gPOHrcQgjpspadROpAIlNbGlhRNi48sRiEr2BjJeQ-4";
-const SH = () => ({ "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY });
+const SH = () => ({ 
+    "Content-Type": "application/json", 
+    "apikey": SUPA_KEY, 
+    "Authorization": "Bearer " + SUPA_KEY,
+    "x-client-info": "belfast-cm/1.0"
+});
 
 // Storage adapter: Supabase (cloud) con fallback a localStorage
 // ── STORAGE ROBUSTO ────────────────────────────────────────────────────
@@ -3576,29 +3581,35 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                     </a>)}
                     {m.text && <div>
                         <div style={{ background: m.role === 'user' ? T.accent : T.card, color: m.role === 'user' ? "#fff" : T.text, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", border: m.role === 'user' ? "none" : `1px solid ${T.border}`, boxShadow: "0 1px 2px rgba(0,0,0,.05)" }}>{m.text}</div>
-                        {m.role === 'assistant' && m.text.length > 200 && (
-                            <button onClick={() => {
-                                const fecha = new Date().toLocaleDateString('es-AR');
-                                const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
-                                const titulo = m.text.slice(0, 60).replace(/[#*\n]/g, '').trim() + '...';
-                                // Generar HTML descargable
-                                const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo}</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:14px;line-height:1.7}h1{color:#1D4ED8;font-size:18px;margin-bottom:4px}h2{color:#1D4ED8;font-size:15px;margin-top:24px}strong,b{font-weight:700}.meta{color:#666;font-size:11px;margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid #e5e7eb}.footer{margin-top:40px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}</style></head><body><h1>BelfastCM — Asistente IA</h1><div class="meta">Fecha: ${fecha} ${hora}</div><div>${m.text.replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div><div class="footer">Generado por BelfastCM × AA2000</div></body></html>`;
-                                const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-                                const url = URL.createObjectURL(blob);
-                                const nombre = `IA_${titulo.slice(0,30).replace(/\s/g,'_')}_${fecha.replace(/\//g,'-')}.html`;
-                                // Guardar en Archivos
-                                const localVal = storage.getLocal('bcm_archivos');
-                                const arr = localVal?.value ? JSON.parse(localVal.value) : [];
-                                arr.unshift({ id: uid(), nombre, ext: 'HTML', url, fecha, size: (blob.size/1024).toFixed(0)+'KB' });
-                                try { localStorage.setItem('bcm_archivos', JSON.stringify(arr)); } catch {}
-                                storage.set('bcm_archivos', JSON.stringify(arr)).catch(()=>{});
-                                // También descargar directamente
-                                const a = document.createElement('a'); a.href = url; a.download = nombre; a.click();
-                                setTimeout(()=>URL.revokeObjectURL(url), 3000);
-                            }} style={{ marginTop: 4, background: "none", border: "none", fontSize: 10, color: T.muted, cursor: "pointer", padding: "2px 0", display: "flex", alignItems: "center", gap: 4 }}>
-                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                                Guardar respuesta
-                            </button>
+                        {m.role === 'assistant' && m.text.length > 50 && (
+                            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                <button onClick={() => hablarTexto(m.text)} style={{ background: T.accentLight, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "5px 14px", fontSize: 11, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z"/><path d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0 010-1.061z"/></svg>
+                                    Escuchar
+                                </button>
+                                <button onClick={() => window.speechSynthesis?.cancel()} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 20, padding: "5px 10px", fontSize: 11, color: T.muted, cursor: "pointer" }}>
+                                    ⏹ Parar
+                                </button>
+                                {m.text.length > 200 && <button onClick={() => {
+                                    const fecha = new Date().toLocaleDateString('es-AR');
+                                    const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+                                    const titulo = m.text.slice(0, 60).replace(/[#*\n]/g, '').trim() + '...';
+                                    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo}</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:14px;line-height:1.7}h1{color:#1D4ED8;font-size:18px;margin-bottom:4px}h2{color:#1D4ED8;font-size:15px;margin-top:24px}strong,b{font-weight:700}.meta{color:#666;font-size:11px;margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid #e5e7eb}.footer{margin-top:40px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}</style></head><body><h1>BelfastCM — Asistente IA</h1><div class="meta">Fecha: ${fecha} ${hora}</div><div>${m.text.replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div><div class="footer">Generado por BelfastCM × AA2000</div></body></html>`;
+                                    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+                                    const url = URL.createObjectURL(blob);
+                                    const nombre = `IA_${titulo.slice(0,30).replace(/\s/g,'_')}_${fecha.replace(/\//g,'-')}.html`;
+                                    const localVal = storage.getLocal('bcm_archivos');
+                                    const arr = localVal?.value ? JSON.parse(localVal.value) : [];
+                                    arr.unshift({ id: uid(), nombre, ext: 'HTML', url, fecha, size: (blob.size/1024).toFixed(0)+'KB' });
+                                    try { localStorage.setItem('bcm_archivos', JSON.stringify(arr)); } catch {}
+                                    storage.set('bcm_archivos', JSON.stringify(arr)).catch(()=>{});
+                                    const a = document.createElement('a'); a.href = url; a.download = nombre; a.click();
+                                    setTimeout(()=>URL.revokeObjectURL(url), 3000);
+                                }} style={{ background: "none", border: "none", fontSize: 10, color: T.muted, cursor: "pointer", padding: "5px 0", display: "flex", alignItems: "center", gap: 4 }}>
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                                    Guardar
+                                </button>}
+                            </div>
                         )}
                     </div>}
                 </div>))}
