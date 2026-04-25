@@ -3349,31 +3349,87 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
             try { const r = await fetch('https://wttr.in/Buenos+Aires?format=j1'); if (r.ok) { const d = await r.json(); const c = d.current_condition?.[0]; if (c) extraInfo += `\nClima BsAs: ${c.temp_C}°C, ${c.weatherDesc?.[0]?.value}`; } } catch { }
         }
 
-        const sys = `Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.
-${buildContext(txt)}${extraInfo}
-
-Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párrafos salvo que pidan un informe detallado.${usarBusqueda ? ' Buscá en internet para dar precios y datos actualizados.' : ''}`;
+        const TB = String.fromCharCode(96,96,96);
+        const sys = 'Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.\n' +
+            buildContext(txt) + extraInfo + '\n\n' +
+            'Respondé en español rioplatense. Sé conciso y directo.' + (usarBusqueda ? ' Buscá en internet para dar precios y datos actualizados.' : '') + '\n\n' +
+            'CAPACIDADES ESPECIALES — Podés modificar datos de la app directamente:\n' +
+            'Cuando el usuario te pida agregar/modificar algo, respondé con texto normal Y al final incluí un bloque JSON:\n\n' +
+            'Para agregar personal:\n' + TB + 'action\n' +
+            '{"tipo":"agregar_personal","datos":{"nombre":"...","rol":"...","empresa":"BelfastCM","telefono":"...","dni":"...","fechaNac":"..."}}\n' + TB + '\n\n' +
+            'Para actualizar avance de obra:\n' + TB + 'action\n' +
+            '{"tipo":"update_obra","obraId":"...","campo":"avance","valor":75}\n' + TB + '\n\n' +
+            'Si analizás un DNI extraé nombre, DNI, fecha de nacimiento y usá el bloque action para agregar la persona.\n' +
+            'Si el usuario dice "agregá a [nombre] como [rol]", creá la persona con el bloque action.';
 
         const r = await callAI(history, sys, apiKey, usarBusqueda);
-        setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
+
+        // Procesar acciones que la IA quiera ejecutar
+        const actionTag = String.fromCharCode(96,96,96) + 'action';
+        const closeTag = String.fromCharCode(96,96,96);
+        // Detectar bloque action en la respuesta
+        const accionRegex = new RegExp(closeTag + 'action\\n([\\s\\S]*?)\\n' + closeTag);
+        const cleanRegex = new RegExp(closeTag + 'action[\\s\\S]*?' + closeTag, 'g');
+        const accionMatch = r.match(accionRegex);
+        let textoLimpio = r.replace(cleanRegex, '').trim();
+        let mensajeExtra = '';
+
+        if (accionMatch) {
+            try {
+                const accion = JSON.parse(accionMatch[1]);
+                if (accion.tipo === 'agregar_personal' && accion.datos?.nombre) {
+                    const nuevaPersona = {
+                        id: uid(),
+                        nombre: accion.datos.nombre,
+                        rol: accion.datos.rol || 'Operario',
+                        empresa: accion.datos.empresa || 'BelfastCM',
+                        telefono: accion.datos.telefono || '',
+                        foto: '',
+                        obra_id: '',
+                        tareas: [],
+                        docs: {},
+                        _dni: accion.datos.dni || '',
+                        _fechaNac: accion.datos.fechaNac || '',
+                    };
+                    setPersonal(p => [...p, nuevaPersona]);
+                    mensajeExtra = '\n\n✅ **' + accion.datos.nombre + '** agregado al personal. Podés verlo en la sección Personal.';
+                }
+                else if (accion.tipo === 'update_obra' && accion.obraId) {
+                    setObras(p => p.map(o => o.id === accion.obraId ? { ...o, [accion.campo]: accion.valor } : o));
+                    mensajeExtra = '\n\n✅ Obra actualizada.';
+                }
+            } catch { }
+        }
+
+        setMsgs(p => [...p, { id: uid(), role: 'assistant', text: textoLimpio + mensajeExtra }]);
         setLoading(false);
         setLoadingMsg('');
+        hablarTexto(textoLimpio);
     }
 
     async function handleAttach(e) {
         const f = e.target.files?.[0]; if (!f) return;
         const url = await toDataUrl(f);
         const isImage = f.type.startsWith('image/');
+        const isPDF = f.type === 'application/pdf';
         const nuevoAttach = { url, name: f.name, type: f.type, isImage, size: f.size };
         setAttach(nuevoAttach);
-        // Si es imagen, adjuntarla al chat para análisis IA (no abrir el diálogo de guardar todavía)
-        // El usuario puede tocar "Guardar" desde el preview del adjunto
-        if (!isImage) setShowSaveDialog(nuevoAttach);
+        if (!isImage && !isPDF) setShowSaveDialog(nuevoAttach);
         e.target.value = '';
     }
 
+    // Analizar DNI o documento desde foto/PDF
+    async function analizarDocumentoPersonal(att) {
+        const esDNI = /dni|documento|cedula|id\b/i.test(att.name) || att.isImage;
+        const prompt = esDNI
+            ? 'Analizá esta imagen. Si es un DNI argentino o documento de identidad, extraé: nombre completo, número de DNI, fecha de nacimiento, y cualquier otro dato relevante. Luego agregá a la persona al sistema de personal.'
+            : 'Analizá este documento. Identificá de qué tipo es (póliza de seguro, ART, carnet, etc.) y extraé los datos más importantes como nombre, número de póliza, vigencia, etc.';
+        setInput(prompt);
+        setAttach(att);
+        setTimeout(() => enviar(), 80);
+    }
+
     async function analizarFotoAhora(att) {
-        // Envía la foto al chat con un mensaje de análisis automático
         setInput('Analizá esta imagen y describí qué ves. Si es de una obra de construcción, identificá trabajos, estado, avance estimado y cualquier observación relevante.');
         setAttach(att);
         setTimeout(() => enviar(), 80);
@@ -3382,12 +3438,11 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
     async function guardarEnObra(att, obraId) {
         if (att.isImage) {
             const fotoId = uid();
-            // Subir al bucket Supabase Storage para no guardar base64 en la DB
-            const url = await uploadFoto(att.url, `obras/${obraId}`, fotoId);
+            const url = await uploadFoto(att.url, 'obras/' + obraId, fotoId);
             setObras(p => p.map(o => o.id === obraId ? { ...o, fotos: [...(o.fotos || []), { id: fotoId, url, nombre: att.name, fecha: new Date().toLocaleDateString('es-AR') }] } : o));
         } else {
             const archId = uid();
-            const url = await uploadFoto(att.url, `obras/${obraId}/archivos`, archId);
+            const url = await uploadFoto(att.url, 'obras/' + obraId + '/archivos', archId);
             setObras(p => p.map(o => o.id === obraId ? { ...o, archivos: [...(o.archivos || []), { id: archId, url, nombre: att.name, ext: att.name.split('.').pop().toUpperCase(), fecha: new Date().toLocaleDateString('es-AR') }] } : o));
         }
         setShowSaveDialog(null);
@@ -3450,9 +3505,9 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
             .replace(/\*\*(.*?)\*\*/g, '$1')
             .replace(/\*(.*?)\*/g, '$1')
             .replace(/#{1,6}\s/g, '')
-            .replace(/`(.*?)`/g, '$1')
+            .replace(/[\u0060](.*?)[\u0060]/g, '$1')
             .replace(/\n+/g, '. ')
-            .slice(0, 800); // máximo 800 chars para no hacer muy larga la respuesta
+            .slice(0, 800);
         const utt = new SpeechSynthesisUtterance(limpio);
         utt.lang = 'es-AR';
         utt.rate = 1.05;
@@ -3473,7 +3528,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
             setAskedName(true);
             try { await storage.set('bcm_chat_user', txt); } catch { }
             try { localStorage.setItem('bcm_chat_user', txt); } catch { }
-            const resp = `Hola ${txt}, soy tu asistente IA para BelfastCM. Tengo acceso en tiempo real a todas tus obras, licitaciones, personal y alertas. ¿En qué puedo ayudarte?`;
+            const resp = 'Hola ' + txt + ', soy tu asistente IA para BelfastCM. Tengo acceso en tiempo real a todas tus obras, licitaciones, personal y alertas. ¿En qué puedo ayudarte?';
             setTimeout(() => {
                 setMsgs(p => [...p, { id: uid(), role: 'assistant', text: resp }]);
                 hablarTexto(resp);
@@ -3491,7 +3546,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
             if (m.attach && m.role === 'user' && m.attach.isImage) {
                 return { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: getMediaType(m.attach.url), data: getBase64(m.attach.url) } }, { type: 'text', text: m.text || 'Analizá esta imagen' }] };
             }
-            return { role: m.role, content: (m.attach && !m.attach.isImage ? `[Archivo: ${m.attach.name}] ` : '') + (m.text || '') };
+            return { role: m.role, content: (m.attach && !m.attach.isImage ? '[Archivo: ' + m.attach.name + '] ' : '') + (m.text || '') };
         });
 
         const usarBusqueda = true;
@@ -3499,13 +3554,12 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
 
         let extraInfo = '';
         if (/dólar|dolar/i.test(txt)) {
-            try { const r = await fetch('https://dolarapi.com/v1/dolares'); if (r.ok) { const d = await r.json(); extraInfo = '\nDólar HOY: ' + d.slice(0, 3).map(x => `${x.nombre}: $${x.venta}`).join(' · '); } } catch { }
+            try { const r = await fetch('https://dolarapi.com/v1/dolares'); if (r.ok) { const d = await r.json(); extraInfo = '\nDólar HOY: ' + d.slice(0, 3).map(x => x.nombre + ': $' + x.venta).join(' · '); } } catch { }
         }
 
-        const sys = `Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.
-${buildContext(txt)}${extraInfo}
-
-Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párrafos. IMPORTANTE: Tenés acceso a búsqueda en internet en tiempo real. Nunca digas que no tenés acceso a internet.`;
+        const sys = 'Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.\n' +
+            buildContext(txt) + extraInfo + '\n\n' +
+            'Respondé en español rioplatense. Sé conciso y directo. IMPORTANTE: Tenés acceso a búsqueda en internet en tiempo real. Nunca digas que no tenés acceso a internet.';
 
         const r = await callAI(history, sys, apiKey, usarBusqueda);
         setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
@@ -3519,19 +3573,19 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
         return (<div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <AppHeader title={cfg.tituloAsistente || 'Asistente IA'} sub={cfg.subtituloAsistente || 'Lee todos los datos de la app'} right={
                 msgs.length > 0 ? (
-                    <button onClick={() => { if (window.confirm('¿Limpiar la conversación actual?')) limpiarChat(); }} style={{ background: 'none', border: `1px solid ${T.border}`, borderRadius: 8, padding: '5px 10px', fontSize: 11, color: T.muted, cursor: 'pointer', fontWeight: 600 }}>
+                    <button onClick={() => { if (window.confirm('¿Limpiar la conversación actual?')) limpiarChat(); }} style={{ background: 'none', border: '1px solid ' + T.border, borderRadius: 8, padding: '5px 10px', fontSize: 11, color: T.muted, cursor: 'pointer', fontWeight: 600 }}>
                         Nueva conversación
                     </button>
                 ) : null
             } />
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "30px", textAlign: "center" }}>
                 {cfg.logoAsistente ? <img src={cfg.logoAsistente} alt="" style={{ width: 90, height: 90, objectFit: "contain", marginBottom: 20 }} />
-                    : <div style={{ width: 90, height: 90, borderRadius: "50%", background: `linear-gradient(135deg, ${T.accent}, ${T.navy})`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20, color: "#fff" }}>
+                    : <div style={{ width: 90, height: 90, borderRadius: "50%", background: 'linear-gradient(135deg, ' + T.accent + ', ' + T.navy + ')', display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20, color: "#fff" }}>
                         <svg width="46" height="46" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M4.848 2.771A49.144 49.144 0 0112 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 01-3.476.383.39.39 0 00-.297.17l-2.755 4.133a.75.75 0 01-1.248 0l-2.755-4.133a.39.39 0 00-.297-.17 48.9 48.9 0 01-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97zM6.75 8.25a.75.75 0 01.75-.75h9a.75.75 0 010 1.5h-9a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5H12a.75.75 0 000-1.5H7.5z" /></svg>
                     </div>}
                 <div style={{ fontSize: 18, fontWeight: 800, color: T.text, marginBottom: 8 }}>¡Hola! 👋</div>
                 <div style={{ fontSize: 14, color: T.sub, marginBottom: 24, lineHeight: 1.5 }}>Antes de empezar, ¿cómo te llamás?</div>
-                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && enviar()} placeholder="Tu nombre" autoFocus style={{ width: "100%", maxWidth: 280, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "12px 16px", fontSize: 15, color: T.text, marginBottom: 14 }} />
+                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && enviar()} placeholder="Tu nombre" autoFocus style={{ width: "100%", maxWidth: 280, background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "12px 16px", fontSize: 15, color: T.text, marginBottom: 14 }} />
                 <PBtn onClick={enviar} disabled={!input.trim()}>Continuar →</PBtn>
             </div>
         </div>);
@@ -3547,7 +3601,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                     <div style={{ fontSize: 13, color: T.muted, marginBottom: 28, maxWidth: 300, lineHeight: 1.5 }}>
                         {cfg.subtituloAsistente || 'Lee todos los datos de la app en tiempo real'}
                     </div>
-                    <button onClick={listening ? stopListening : startListening} style={{ background: T.card, border: `1.5px solid ${T.border}`, borderRadius: 28, padding: 0, width: 180, height: 180, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 12px rgba(0,0,0,.06)", marginBottom: 14, transition: "all .2s" }}>
+                    <button onClick={listening ? stopListening : startListening} style={{ background: T.card, border: '1.5px solid ' + T.border, borderRadius: 28, padding: 0, width: 180, height: 180, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 12px rgba(0,0,0,.06)", marginBottom: 14, transition: "all .2s" }}>
                         {cfg.logoAsistente ? <img src={cfg.logoAsistente} alt="" style={{ width: 130, height: 130, objectFit: "contain" }} />
                             : <BelfastLogo size={110} />}
                     </button>
@@ -3556,12 +3610,12 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                     </button>
                     <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 10 }}>
                         {[
-                            `¿Qué obras tenemos activas${userName ? ', ' + userName : ''}?`,
+                            '¿Qué obras tenemos activas' + (userName ? ', ' + userName : '') + '?',
                             '¿Qué documentación le falta al personal?',
                             'Resumen del avance de todas las obras',
                             'Total de materiales y subcontratos',
                         ].map((q, i) => (
-                            <button key={i} onClick={() => { setInput(q); setTimeout(() => enviar(), 50); }} style={{ width: "100%", background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "13px 16px", textAlign: "left", fontSize: 13, color: T.text, cursor: "pointer", boxShadow: "0 1px 2px rgba(0,0,0,.03)" }}>
+                            <button key={i} onClick={() => { setInput(q); setTimeout(() => enviar(), 50); }} style={{ width: "100%", background: T.card, border: '1px solid ' + T.border, borderRadius: T.rsm, padding: "13px 16px", textAlign: "left", fontSize: 13, color: T.text, cursor: "pointer", boxShadow: "0 1px 2px rgba(0,0,0,.03)" }}>
                                 {q}
                             </button>
                         ))}
@@ -3580,24 +3634,24 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                         </div>
                     </a>)}
                     {m.text && <div>
-                        <div style={{ background: m.role === 'user' ? T.accent : T.card, color: m.role === 'user' ? "#fff" : T.text, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", border: m.role === 'user' ? "none" : `1px solid ${T.border}`, boxShadow: "0 1px 2px rgba(0,0,0,.05)" }}>{m.text}</div>
+                        <div style={{ background: m.role === 'user' ? T.accent : T.card, color: m.role === 'user' ? "#fff" : T.text, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", border: m.role === 'user' ? "none" : '1px solid ' + T.border, boxShadow: "0 1px 2px rgba(0,0,0,.05)" }}>{m.text}</div>
                         {m.role === 'assistant' && m.text.length > 50 && (
                             <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
-                                <button onClick={() => hablarTexto(m.text)} style={{ background: T.accentLight, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "5px 14px", fontSize: 11, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                                <button onClick={() => hablarTexto(m.text)} style={{ background: T.accentLight, border: '1px solid ' + T.accent, borderRadius: 20, padding: "5px 14px", fontSize: 11, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z"/><path d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0 010-1.061z"/></svg>
                                     Escuchar
                                 </button>
-                                <button onClick={() => window.speechSynthesis?.cancel()} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 20, padding: "5px 10px", fontSize: 11, color: T.muted, cursor: "pointer" }}>
+                                <button onClick={() => window.speechSynthesis?.cancel()} style={{ background: T.bg, border: '1px solid ' + T.border, borderRadius: 20, padding: "5px 10px", fontSize: 11, color: T.muted, cursor: "pointer" }}>
                                     ⏹ Parar
                                 </button>
                                 {m.text.length > 200 && <button onClick={() => {
                                     const fecha = new Date().toLocaleDateString('es-AR');
                                     const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
                                     const titulo = m.text.slice(0, 60).replace(/[#*\n]/g, '').trim() + '...';
-                                    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo}</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:14px;line-height:1.7}h1{color:#1D4ED8;font-size:18px;margin-bottom:4px}h2{color:#1D4ED8;font-size:15px;margin-top:24px}strong,b{font-weight:700}.meta{color:#666;font-size:11px;margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid #e5e7eb}.footer{margin-top:40px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}</style></head><body><h1>BelfastCM — Asistente IA</h1><div class="meta">Fecha: ${fecha} ${hora}</div><div>${m.text.replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div><div class="footer">Generado por BelfastCM × AA2000</div></body></html>`;
+                                    const html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>' + titulo + '</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 30px;color:#1a1a1a;font-size:14px;line-height:1.7}h1{color:#1D4ED8;font-size:18px}h2{color:#1D4ED8;font-size:15px;margin-top:24px}.meta{color:#666;font-size:11px;margin-bottom:24px}.footer{margin-top:40px;font-size:11px;color:#9ca3af;text-align:center}</style></head><body><h1>BelfastCM — Asistente IA</h1><div class="meta">Fecha: ' + fecha + ' ' + hora + '</div><div>' + m.text.replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>') + '</div><div class="footer">Generado por BelfastCM × AA2000</div></body></html>';
                                     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
                                     const url = URL.createObjectURL(blob);
-                                    const nombre = `IA_${titulo.slice(0,30).replace(/\s/g,'_')}_${fecha.replace(/\//g,'-')}.html`;
+                                    const nombre = 'IA_' + titulo.slice(0,30).replace(/\s/g,'_') + '_' + fecha.replace(/\//g,'-') + '.html';
                                     const localVal = storage.getLocal('bcm_archivos');
                                     const arr = localVal?.value ? JSON.parse(localVal.value) : [];
                                     arr.unshift({ id: uid(), nombre, ext: 'HTML', url, fecha, size: (blob.size/1024).toFixed(0)+'KB' });
@@ -3613,9 +3667,9 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                         )}
                     </div>}
                 </div>))}
-                {loading && <div style={{ alignSelf: 'flex-start', padding: "10px 14px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                {loading && <div style={{ alignSelf: 'flex-start', padding: "10px 14px", background: T.card, border: '1px solid ' + T.border, borderRadius: 14, display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ display: "flex", gap: 4 }}>
-                        {[0, .15, .3].map(d => <div key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: `pulse 1.2s infinite ${d}s` }} />)}
+                        {[0, .15, .3].map(d => <div key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: 'pulse 1.2s infinite ' + d + 's' }} />)}
                     </div>
                     {loadingMsg && <span style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{loadingMsg}</span>}
                 </div>}
@@ -3623,16 +3677,36 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
         </div>
         {attach && <div style={{ padding: "6px 14px 0" }}>
             {attach.isImage ? (
-                // Imagen: mostrar preview grande con botones Analizar y Guardar
-                <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px", display: "flex", gap: 10, alignItems: "center" }}>
-                    <img src={attach.url} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8, flexShrink: 0, border: `1px solid ${T.border}` }} />
+                <div style={{ background: T.card, border: '1px solid ' + T.border, borderRadius: 12, padding: "10px", display: "flex", gap: 10, alignItems: "center" }}>
+                    <img src={attach.url} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8, flexShrink: 0, border: '1px solid ' + T.border }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 6 }}>{attach.name}</div>
-                        <div style={{ display: "flex", gap: 6 }}>
-                            <button onClick={() => analizarFotoAhora(attach)} style={{ flex: 1, background: T.accent, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
-                                Analizar con IA
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                            <button onClick={() => analizarDocumentoPersonal(attach)} style={{ flex: 1, background: "#7C3AED", border: "none", borderRadius: 8, padding: "6px 8px", fontSize: 10, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
+                                👤 Leer DNI / Doc
                             </button>
-                            <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 600, color: T.sub, cursor: "pointer" }}>
+                            <button onClick={() => analizarFotoAhora(attach)} style={{ flex: 1, background: T.accent, border: "none", borderRadius: 8, padding: "6px 8px", fontSize: 10, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
+                                🔍 Analizar
+                            </button>
+                            <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.bg, border: '1px solid ' + T.border, borderRadius: 8, padding: "6px 8px", fontSize: 10, fontWeight: 600, color: T.sub, cursor: "pointer" }}>
+                                💾
+                            </button>
+                            <button onClick={() => setAttach(null)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
+                        </div>
+                    </div>
+                </div>
+            ) : attach.type === 'application/pdf' ? (
+                <div style={{ background: T.card, border: '1px solid ' + T.border, borderRadius: 12, padding: "10px", display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ width: 44, height: 44, borderRadius: 8, background: "#FEF2F2", border: "1px solid #FECACA", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: "#EF4444" }}>PDF</span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 6 }}>{attach.name}</div>
+                        <div style={{ display: "flex", gap: 5 }}>
+                            <button onClick={() => analizarDocumentoPersonal(attach)} style={{ flex: 1, background: "#7C3AED", border: "none", borderRadius: 8, padding: "6px 8px", fontSize: 10, fontWeight: 700, color: "#fff", cursor: "pointer" }}>
+                                👤 Analizar doc personal
+                            </button>
+                            <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.bg, border: '1px solid ' + T.border, borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 600, color: T.sub, cursor: "pointer" }}>
                                 Guardar
                             </button>
                             <button onClick={() => setAttach(null)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
@@ -3640,8 +3714,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                     </div>
                 </div>
             ) : (
-                // Archivo: preview compacto
-                <div style={{ display: "inline-flex", gap: 8, alignItems: "center", background: T.accentLight, border: `1px solid ${T.accent}`, borderRadius: 10, padding: "5px 10px" }}>
+                <div style={{ display: "inline-flex", gap: 8, alignItems: "center", background: T.accentLight, border: '1px solid ' + T.accent, borderRadius: 10, padding: "5px 10px" }}>
                     <div style={{ width: 30, height: 30, borderRadius: 6, background: T.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700 }}>{attach.name.split('.').pop().toUpperCase().slice(0,4)}</div>
                     <span style={{ fontSize: 11, color: T.accent, fontWeight: 600, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attach.name}</span>
                     <button onClick={() => setShowSaveDialog(attach)} style={{ background: T.accent, border: "none", color: "#fff", cursor: "pointer", fontSize: 10, fontWeight: 700, borderRadius: 6, padding: "3px 8px" }}>Guardar</button>
@@ -3649,15 +3722,15 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
                 </div>
             )}
         </div>}
-        <div style={{ padding: "8px 10px", background: T.card, borderTop: `1px solid ${T.border}`, display: "flex", gap: 6, alignItems: "center", position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99 }}>
+        <div style={{ padding: "8px 10px", background: T.card, borderTop: '1px solid ' + T.border, display: "flex", gap: 6, alignItems: "center", position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99 }}>
             <input ref={camRef} type="file" accept="image/*" capture="environment" onChange={handleAttach} style={{ display: "none" }} />
             <input ref={galRef} type="file" accept="image/*" onChange={handleAttach} style={{ display: "none" }} />
             <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.xlsx,.xls,.txt,.csv,.ppt,.pptx,.zip" onChange={handleAttach} style={{ display: "none" }} />
-            <button onClick={() => setShowAttachMenu(v => !v)} title="Adjuntar" style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: "50%", width: 36, height: 36, cursor: "pointer", flexShrink: 0, color: T.sub, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <button onClick={() => setShowAttachMenu(v => !v)} title="Adjuntar" style={{ background: T.bg, border: '1px solid ' + T.border, borderRadius: "50%", width: 36, height: 36, cursor: "pointer", flexShrink: 0, color: T.sub, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M18.97 3.659a2.25 2.25 0 00-3.182 0l-10.94 10.94a3.75 3.75 0 105.304 5.303l7.693-7.693a.75.75 0 011.06 1.06l-7.693 7.693a5.25 5.25 0 11-7.424-7.424l10.939-10.94a3.75 3.75 0 115.303 5.303L9.097 18.835l-.008.008-.007.007-.002.002-.003.002A2.25 2.25 0 015.91 15.66l7.81-7.81a.75.75 0 011.061 1.06l-7.81 7.81a.75.75 0 001.054 1.068L18.97 6.84a2.25 2.25 0 000-3.182z" /></svg>
             </button>
-            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && enviar()} placeholder={listening ? 'Escuchando…' : 'Escribí o usá el micrófono…'} style={{ flex: 1, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 20, padding: "9px 14px", fontSize: 13, color: T.text, minWidth: 0 }} />
-            <button onClick={listening ? stopListening : startListening} title="Hablar" style={{ background: listening ? "#EF4444" : T.bg, border: `1px solid ${listening ? "#EF4444" : T.border}`, borderRadius: "50%", width: 36, height: 36, cursor: "pointer", flexShrink: 0, color: listening ? "#fff" : T.sub, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && enviar()} placeholder={listening ? 'Escuchando…' : 'Escribí o usá el micrófono…'} style={{ flex: 1, background: T.bg, border: '1.5px solid ' + T.border, borderRadius: 20, padding: "9px 14px", fontSize: 13, color: T.text, minWidth: 0 }} />
+            <button onClick={listening ? stopListening : startListening} title="Hablar" style={{ background: listening ? "#EF4444" : T.bg, border: '1px solid ' + listening ? "#EF4444" : T.border, borderRadius: "50%", width: 36, height: 36, cursor: "pointer", flexShrink: 0, color: listening ? "#fff" : T.sub, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" /><path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" /></svg>
             </button>
             <button onClick={enviar} disabled={!input.trim() && !attach} title="Enviar" style={{ background: (input.trim() || attach) ? T.accent : T.border, border: "none", borderRadius: "50%", width: 36, height: 36, color: "#fff", cursor: (input.trim() || attach) ? "pointer" : "not-allowed", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -3666,19 +3739,19 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
         </div>
         {showAttachMenu && (<Sheet title="Adjuntar" onClose={() => setShowAttachMenu(false)}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                <button onClick={() => { setShowAttachMenu(false); camRef.current?.click(); }} style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                <button onClick={() => { setShowAttachMenu(false); camRef.current?.click(); }} style={{ background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 44, height: 44, borderRadius: 12, background: T.accentLight, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.75 3.75 0 100 7.5A3.75 3.75 0 0012 9z"/><path fillRule="evenodd" d="M9.344 3.071a49.52 49.52 0 015.312 0c.967.052 1.83.585 2.332 1.39l.821 1.317c.24.383.645.643 1.11.71.386.054.77.113 1.152.177 1.432.239 2.429 1.493 2.429 2.909V18a3 3 0 01-3 3H6a3 3 0 01-3-3V9.574c0-1.416.997-2.67 2.429-2.909.382-.064.766-.123 1.151-.178a1.56 1.56 0 001.11-.71l.822-1.315a2.942 2.942 0 012.332-1.39zM6.75 12.75a5.25 5.25 0 1110.5 0 5.25 5.25 0 01-10.5 0z" clipRule="evenodd" /></svg>
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 700, color: T.text }}>Cámara</span>
                 </button>
-                <button onClick={() => { setShowAttachMenu(false); galRef.current?.click(); }} style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                <button onClick={() => { setShowAttachMenu(false); galRef.current?.click(); }} style={{ background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 44, height: 44, borderRadius: 12, background: hexLight("#10B981"), color: "#10B981", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zM3 16.06V18c0 .414.336.75.75.75h16.5A.75.75 0 0021 18v-1.94l-2.69-2.689a1.5 1.5 0 00-2.12 0l-.88.879.97.97a.75.75 0 11-1.06 1.06l-5.16-5.159a1.5 1.5 0 00-2.12 0L3 16.061zm10.125-7.81a1.125 1.125 0 112.25 0 1.125 1.125 0 01-2.25 0z" clipRule="evenodd" /></svg>
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 700, color: T.text }}>Galería</span>
                 </button>
-                <button onClick={() => { setShowAttachMenu(false); fileRef.current?.click(); }} style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                <button onClick={() => { setShowAttachMenu(false); fileRef.current?.click(); }} style={{ background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "18px 10px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 44, height: 44, borderRadius: 12, background: hexLight("#F59E0B"), color: "#F59E0B", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0016.5 9h-1.875a1.875 1.875 0 01-1.875-1.875V5.25A3.75 3.75 0 009 1.5H5.625z" /><path d="M12.971 1.816A5.23 5.23 0 0114.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 013.434 1.279 9.768 9.768 0 00-6.963-6.963z" /></svg>
                     </div>
@@ -3688,7 +3761,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
         </Sheet>)}
         {showSaveDialog && (<Sheet title="Guardar adjunto" onClose={() => setShowSaveDialog(null)}>
             <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>Elegí dónde guardar <b>{showSaveDialog.name}</b>:</div>
-            <button onClick={() => guardarEnArchivos(showSaveDialog)} style={{ width: "100%", background: T.accentLight, border: `1.5px solid ${T.accent}`, borderRadius: T.rsm, padding: "12px 14px", textAlign: "left", cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => guardarEnArchivos(showSaveDialog)} style={{ width: "100%", background: T.accentLight, border: '1.5px solid ' + T.accent, borderRadius: T.rsm, padding: "12px 14px", textAlign: "left", cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 32, height: 32, borderRadius: 8, background: T.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19.5 21a3 3 0 003-3v-4.5a3 3 0 00-3-3h-15a3 3 0 00-3 3V18a3 3 0 003 3h15zM1.5 10.146V6a3 3 0 013-3h5.379a2.25 2.25 0 011.59.659l2.122 2.121c.14.141.331.22.53.22H19.5a3 3 0 013 3v1.146A4.483 4.483 0 0019.5 9h-15a4.483 4.483 0 00-3 1.146z" /></svg>
                 </div>
@@ -3700,7 +3773,7 @@ Respondé en español rioplatense. Sé conciso y directo — máximo 3-4 párraf
             <div style={{ fontSize: 11, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "10px 0 6px" }}>O guardar en una obra:</div>
             {obras.length === 0 && <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic", padding: "10px 0" }}>No hay obras disponibles</div>}
             {obras.map(o => (
-                <button key={o.id} onClick={() => guardarEnObra(showSaveDialog, o.id)} style={{ width: "100%", background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "10px 14px", textAlign: "left", cursor: "pointer", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
+                <button key={o.id} onClick={() => guardarEnObra(showSaveDialog, o.id)} style={{ width: "100%", background: T.card, border: '1px solid ' + T.border, borderRadius: T.rsm, padding: "10px 14px", textAlign: "left", cursor: "pointer", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 30, height: 30, borderRadius: 7, background: hexLight(T.navy), color: T.navy, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" clipRule="evenodd" d="M4.5 2.25a.75.75 0 000 1.5v16.5h-.75a.75.75 0 000 1.5h16.5a.75.75 0 000-1.5h-.75V3.75a.75.75 0 000-1.5h-15zM9 6a.75.75 0 000 1.5h1.5a.75.75 0 000-1.5H9zm-.75 3.75A.75.75 0 019 9h1.5a.75.75 0 010 1.5H9a.75.75 0 01-.75-.75zM9 12a.75.75 0 000 1.5h1.5a.75.75 0 000-1.5H9zm3.75-5.25A.75.75 0 0113.5 6H15a.75.75 0 010 1.5h-1.5a.75.75 0 01-.75-.75zM13.5 9a.75.75 0 000 1.5H15A.75.75 0 0015 9h-1.5zm-.75 3.75a.75.75 0 01.75-.75H15a.75.75 0 010 1.5h-1.5a.75.75 0 01-.75-.75zM9 19.5v-2.25a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75V19.5H9z" /></svg>
                     </div>
@@ -3724,9 +3797,9 @@ async function enviarWA(phoneId, token, telefono, mensaje) {
     if (numero.startsWith('549')) numero = numero; // ya tiene formato correcto
     else if (numero.startsWith('54') && !numero.startsWith('549')) numero = '549' + numero.slice(2);
 
-    const r = await fetch(`https://graph.facebook.com/v19.0/${phoneId}/messages`, {
+    const r = await fetch('https://graph.facebook.com/v19.0/' + phoneId + '/messages', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             messaging_product: 'whatsapp',
             to: numero,
@@ -3735,7 +3808,7 @@ async function enviarWA(phoneId, token, telefono, mensaje) {
         })
     });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error?.message || `Error ${r.status}`);
+    if (!r.ok) throw new Error(d.error?.message || 'Error ' + r.status);
     return d;
 }
 
@@ -3763,13 +3836,13 @@ function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
         const hoy = new Date().toLocaleDateString('es-AR');
         switch (tipo) {
             case 'criticas':
-                return alerts.filter(a => a.prioridad === 'alta').map(a => `⚠ BelfastCM — ALERTA CRÍTICA\n${a.msg}\nFecha: ${hoy}`);
+                return alerts.filter(a => a.prioridad === 'alta').map(a => '\u26a0 BelfastCM \u2014 ALERTA CR\u00cdTICA\n' + a.msg + '\nFecha: ' + hoy);
             case 'documentacion':
-                return alerts.filter(a => a.id.startsWith('docfalta') || a.id.startsWith('doc_')).map(a => `📋 BelfastCM — Documentación\n${a.msg}\nPor favor regularizá esta situación. Fecha: ${hoy}`);
+                return alerts.filter(a => a.id.startsWith('docfalta') || a.id.startsWith('doc_')).map(a => '\uD83D\uDCCB BelfastCM \u2014 Documentaci\u00f3n\n' + a.msg + '\nPor favor regulariz\u00e1 esta situaci\u00f3n. Fecha: ' + hoy);
             case 'licitaciones':
-                return alerts.filter(a => a.id.startsWith('lic_')).map(a => `🏗 BelfastCM — Licitación\n${a.msg}\nFecha: ${hoy}`);
+                return alerts.filter(a => a.id.startsWith('lic_')).map(a => '\uD83C\uDFD7 BelfastCM \u2014 Licitaci\u00f3n\n' + a.msg + '\nFecha: ' + hoy);
             case 'personalizada':
-                return msgCustom.trim() ? [`📢 BelfastCM\n${msgCustom.trim()}\nFecha: ${hoy}`] : [];
+                return msgCustom.trim() ? ['\uD83D\uDCE2 BelfastCM\n' + msgCustom.trim() + '\nFecha: ' + hoy] : [];
             default: return [];
         }
     }
@@ -3816,16 +3889,16 @@ function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
                     {TIPOS.map(t => {
                         const count = t.id === 'personalizada' ? (msgCustom.trim() ? 1 : 0) : getMensajesParaTipo(t.id).length;
-                        return (<button key={t.id} onClick={() => setTipoAlerta(t.id)} style={{ padding: "10px 8px", borderRadius: T.rsm, border: `1.5px solid ${tipoAlerta === t.id ? t.color : T.border}`, background: tipoAlerta === t.id ? t.bg : T.card, cursor: "pointer", textAlign: "left" }}>
+                        return (<button key={t.id} onClick={() => setTipoAlerta(t.id)} style={{ padding: "10px 8px", borderRadius: T.rsm, border: '1.5px solid ' + tipoAlerta === t.id ? t.color : T.border, background: tipoAlerta === t.id ? t.bg : T.card, cursor: "pointer", textAlign: "left" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, color: t.color }}>{t.label}</div>
-                            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{count} {t.id === 'personalizada' ? 'mensaje' : `alerta${count !== 1 ? 's' : ''}`}</div>
+                            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>{count} {t.id === 'personalizada' ? 'mensaje' : ('alerta' + (count !== 1 ? 's' : ''))}</div>
                         </button>);
                     })}
                 </div>
 
                 {tipoAlerta === 'personalizada' && (
                     <Field label="Mensaje a enviar">
-                        <textarea value={msgCustom} onChange={e => setMsgCustom(e.target.value)} placeholder="Ej: Mañana hay inspección en EZE Terminal A. Presentarse a las 8:00hs con documentación completa." rows={4} style={{ width: "100%", background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "10px 12px", fontSize: 13, color: T.text, resize: "none" }} />
+                        <textarea value={msgCustom} onChange={e => setMsgCustom(e.target.value)} placeholder="Ej: Mañana hay inspección en EZE Terminal A. Presentarse a las 8:00hs con documentación completa." rows={4} style={{ width: "100%", background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "10px 12px", fontSize: 13, color: T.text, resize: "none" }} />
                     </Field>
                 )}
 
@@ -3842,7 +3915,7 @@ function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
             {/* Destinatarios */}
             <Card style={{ padding: "16px", marginBottom: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <Lbl>Destinatarios ({destinos.length === 0 ? `todos — ${personalConTel.length}` : destinos.length} personas)</Lbl>
+                    <Lbl>Destinatarios ({destinos.length === 0 ? ('todos \u2014 ' + personalConTel.length) : destinos.length} personas)</Lbl>
                     {destinos.length > 0 && <button onClick={() => setDestinos([])} style={{ background: "none", border: "none", fontSize: 11, color: T.accent, fontWeight: 600, cursor: "pointer" }}>Seleccionar todos</button>}
                 </div>
                 {personalConTel.length === 0 ? (
@@ -3862,8 +3935,8 @@ function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
                                     const nuevos = [...destinos, p.id];
                                     setDestinos(nuevos.length === personalConTel.length ? [] : nuevos);
                                 }
-                            }} style={{ display: "flex", alignItems: "center", gap: 10, background: sel ? "#ECFDF5" : T.bg, border: `1.5px solid ${sel ? "#86EFAC" : T.border}`, borderRadius: T.rsm, padding: "10px 12px", cursor: "pointer", textAlign: "left" }}>
-                                <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${sel ? "#10B981" : T.border}`, background: sel ? "#10B981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            }} style={{ display: "flex", alignItems: "center", gap: 10, background: sel ? "#ECFDF5" : T.bg, border: '1.5px solid ' + sel ? "#86EFAC" : T.border, borderRadius: T.rsm, padding: "10px 12px", cursor: "pointer", textAlign: "left" }}>
+                                <div style={{ width: 20, height: 20, borderRadius: "50%", border: '2px solid ' + sel ? "#10B981" : T.border, background: sel ? "#10B981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                                     {sel && <svg width="11" height="11" viewBox="0 0 24 24" fill="white"><path d="M4.5 12.75l6 6 9-13.5" strokeWidth="3" stroke="white" strokeLinecap="round" strokeLinejoin="round" /></svg>}
                                 </div>
                                 <div style={{ flex: 1 }}>
@@ -3899,7 +3972,7 @@ function AlertasWA({ cfg, personal, lics, obras, alerts, setView }) {
                     </div>}
                 </div>
                 {resultados.map((r, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.border}` }}>
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: '1px solid ' + T.border }}>
                         <div style={{ width: 8, height: 8, borderRadius: "50%", background: r.ok ? "#10B981" : "#EF4444", flexShrink: 0 }} />
                         <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{r.nombre}</div>
@@ -3969,7 +4042,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
         <AppHeader title={t(cfg, 'mas_titulo')} sub={user?.nombre || user?.rol || ''} />
         <div style={{ padding: "14px 18px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-                {MAS_ITEMS.map(m => (<button key={m.id} onClick={() => setView(m.id)} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: T.rsm, padding: "14px 8px", cursor: "pointer", boxShadow: T.shadow, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                {MAS_ITEMS.map(m => (<button key={m.id} onClick={() => setView(m.id)} style={{ background: T.card, border: '1px solid ' + T.border, borderRadius: T.rsm, padding: "14px 8px", cursor: "pointer", boxShadow: T.shadow, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 40, height: 40, borderRadius: 10, background: hexLight(m.color), color: m.color, display: "flex", alignItems: "center", justifyContent: "center" }}>{m.svg}</div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: T.text, textAlign: "center", lineHeight: 1.2 }}>{m.label}</div>
                 </button>))}
@@ -4001,7 +4074,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
         {showCfg && (<Sheet title="Configuración" onClose={() => setShowCfg(false)}>
             <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto" }}>
                 {[{ id: 'cuenta', l: 'Cuenta' }, { id: 'tema', l: 'Tema' }, { id: 'font', l: 'Fuente' }, { id: 'forma', l: 'Forma' }, { id: 'logos', l: 'Logos' }, { id: 'ubic', l: 'Ubicaciones' }, { id: 'api', l: 'API Key' }, { id: 'whatsapp', l: 'WhatsApp' }, { id: 'textos', l: 'Textos' }].map(s => (
-                    <button key={s.id} onClick={() => setCfgSection(s.id)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${cfgSection === s.id ? T.accent : T.border}`, background: cfgSection === s.id ? T.accentLight : T.card, color: cfgSection === s.id ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{s.l}</button>
+                    <button key={s.id} onClick={() => setCfgSection(s.id)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 20, border: '1.5px solid ' + cfgSection === s.id ? T.accent : T.border, background: cfgSection === s.id ? T.accentLight : T.card, color: cfgSection === s.id ? T.accent : T.sub, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{s.l}</button>
                 ))}
             </div>
 
@@ -4018,7 +4091,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
             {cfgSection === 'tema' && (<div>
                 <Lbl>Tema preestablecido</Lbl>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 14 }}>
-                    {THEME_PRESETS.map(p => (<button key={p.id} onClick={() => setTema(p.id)} style={{ padding: "10px 6px", borderRadius: T.rsm, border: `1.5px solid ${cfg.themeId === p.id ? p.accent : T.border}`, background: cfg.themeId === p.id ? hexLight(p.accent) : T.card, cursor: "pointer" }}>
+                    {THEME_PRESETS.map(p => (<button key={p.id} onClick={() => setTema(p.id)} style={{ padding: "10px 6px", borderRadius: T.rsm, border: '1.5px solid ' + cfg.themeId === p.id ? p.accent : T.border, background: cfg.themeId === p.id ? hexLight(p.accent) : T.card, cursor: "pointer" }}>
                         <div style={{ width: 20, height: 20, borderRadius: "50%", background: p.accent, margin: "0 auto 5px" }} />
                         <div style={{ fontSize: 10, fontWeight: 700, color: T.text }}>{p.label}</div>
                     </button>))}
@@ -4030,13 +4103,13 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
                         <span style={{ fontSize: 11, color: T.sub, fontWeight: 600 }}>{ck.label}</span>
                     </div>))}
                 </div>
-                <button onClick={restaurarTema} style={{ width: "100%", marginTop: 14, background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: T.rsm, padding: "10px", fontSize: 12, fontWeight: 600, color: T.sub, cursor: "pointer" }}>↺ Restaurar tema por defecto</button>
+                <button onClick={restaurarTema} style={{ width: "100%", marginTop: 14, background: T.bg, border: '1.5px solid ' + T.border, borderRadius: T.rsm, padding: "10px", fontSize: 12, fontWeight: 600, color: T.sub, cursor: "pointer" }}>↺ Restaurar tema por defecto</button>
             </div>)}
 
             {cfgSection === 'font' && (<div>
                 <Lbl>Tipografía</Lbl>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                    {FONTS.map(f => (<button key={f.id} onClick={() => updCfg({ fontId: f.id })} style={{ padding: "14px 10px", borderRadius: T.rsm, border: `1.5px solid ${cfg.fontId === f.id ? T.accent : T.border}`, background: cfg.fontId === f.id ? T.accentLight : T.card, cursor: "pointer", textAlign: "left" }}>
+                    {FONTS.map(f => (<button key={f.id} onClick={() => updCfg({ fontId: f.id })} style={{ padding: "14px 10px", borderRadius: T.rsm, border: '1.5px solid ' + cfg.fontId === f.id ? T.accent : T.border, background: cfg.fontId === f.id ? T.accentLight : T.card, cursor: "pointer", textAlign: "left" }}>
                         <div style={{ fontFamily: f.value, fontSize: 16, fontWeight: 700, color: T.text }}>{f.label}</div>
                         <div style={{ fontFamily: f.value, fontSize: 11, color: T.muted, marginTop: 2 }}>Texto de ejemplo</div>
                     </button>))}
@@ -4046,7 +4119,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
             {cfgSection === 'forma' && (<div>
                 <Lbl>Forma de los elementos</Lbl>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                    {RADIUS_OPTS.map(r => (<button key={r.id} onClick={() => updCfg({ radiusId: r.id })} style={{ padding: "14px 10px", borderRadius: r.r, border: `1.5px solid ${cfg.radiusId === r.id ? T.accent : T.border}`, background: cfg.radiusId === r.id ? T.accentLight : T.card, cursor: "pointer", textAlign: "center" }}>
+                    {RADIUS_OPTS.map(r => (<button key={r.id} onClick={() => updCfg({ radiusId: r.id })} style={{ padding: "14px 10px", borderRadius: r.r, border: '1.5px solid ' + cfg.radiusId === r.id ? T.accent : T.border, background: cfg.radiusId === r.id ? T.accentLight : T.card, cursor: "pointer", textAlign: "center" }}>
                         <div style={{ width: 40, height: 40, borderRadius: r.r, background: T.accent, margin: "0 auto 6px" }} />
                         <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{r.label}</div>
                     </button>))}
@@ -4058,7 +4131,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
                     <div key={lg.key} style={{ marginBottom: 12 }}>
                         <Lbl>{lg.l}</Lbl>
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            {cfg[lg.key] && <img src={cfg[lg.key]} alt="" style={{ width: 50, height: 50, objectFit: "contain", borderRadius: 8, border: `1px solid ${T.border}` }} />}
+                            {cfg[lg.key] && <img src={cfg[lg.key]} alt="" style={{ width: 50, height: 50, objectFit: "contain", borderRadius: 8, border: '1px solid ' + T.border }} />}
                             <input type="file" accept="image/*" onChange={e => e.target.files[0] && handleLogoUpload(lg.key, e.target.files[0])} style={{ flex: 1, fontSize: 11 }} />
                             {cfg[lg.key] && <button onClick={() => updCfg({ [lg.key]: "" })} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, padding: "5px 10px", fontSize: 10, color: "#EF4444", cursor: "pointer" }}>✕</button>}
                         </div>
@@ -4072,11 +4145,11 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
                 <Field label="Etiqueta del campo (ej: Aeropuerto, Sucursal, Obra)"><TInput value={cfg.labelUbicacion || 'Aeropuerto'} onChange={e => updCfg({ labelUbicacion: e.target.value })} /></Field>
                 <Lbl>Ubicaciones</Lbl>
                 {(cfg.ubicaciones?.length ? cfg.ubicaciones : DEFAULT_UBICACIONES).map(u => (<div key={u.id} style={{ display: "grid", gridTemplateColumns: "60px 1fr 34px", gap: 6, marginBottom: 6, alignItems: "center" }}>
-                    <input value={u.code} onChange={e => updUbic(u.id, { code: e.target.value })} placeholder="Cód" style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, color: T.text, textTransform: "uppercase" }} />
-                    <input value={u.name} onChange={e => updUbic(u.id, { name: e.target.value })} placeholder="Nombre" style={{ background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, color: T.text }} />
+                    <input value={u.code} onChange={e => updUbic(u.id, { code: e.target.value })} placeholder="Cód" style={{ background: T.bg, border: '1.5px solid ' + T.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, color: T.text, textTransform: "uppercase" }} />
+                    <input value={u.name} onChange={e => updUbic(u.id, { name: e.target.value })} placeholder="Nombre" style={{ background: T.bg, border: '1.5px solid ' + T.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, color: T.text }} />
                     <button onClick={() => delUbic(u.id)} style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>✕</button>
                 </div>))}
-                <button onClick={agregarUbicacion} style={{ width: "100%", marginTop: 8, background: T.bg, border: `1.5px dashed ${T.border}`, borderRadius: T.rsm, padding: "12px", fontSize: 13, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <button onClick={agregarUbicacion} style={{ width: "100%", marginTop: 8, background: T.bg, border: '1.5px dashed ' + T.border, borderRadius: T.rsm, padding: "12px", fontSize: 13, fontWeight: 700, color: T.accent, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                     <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Agregar ubicación
                 </button>
             </div>)}
@@ -4141,7 +4214,7 @@ function Mas({ setView, setUser, user, cfg, setCfg, apiKey, setApiKey }) {
                 {Object.entries(DEFAULT_TEXTOS).slice(0, 30).map(([k, defVal]) => (
                     <div key={k} style={{ marginBottom: 8 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: T.sub, marginBottom: 3, fontFamily: "monospace" }}>{k}</div>
-                        <input value={cfg.textos?.[k] ?? defVal} onChange={e => updCfg({ textos: { ...cfg.textos, [k]: e.target.value } })} placeholder={defVal} style={{ width: "100%", background: T.bg, border: `1.5px solid ${T.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, color: T.text }} />
+                        <input value={cfg.textos?.[k] ?? defVal} onChange={e => updCfg({ textos: { ...cfg.textos, [k]: e.target.value } })} placeholder={defVal} style={{ width: "100%", background: T.bg, border: '1.5px solid ' + T.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, color: T.text }} />
                     </div>
                 ))}
                 <div style={{ fontSize: 11, color: T.muted, marginTop: 10, fontStyle: "italic" }}>... y muchos más. Podés editarlos todos desde el código fuente.</div>
@@ -4185,14 +4258,14 @@ function LoginScreen({ onLogin, cfg, personal }) {
                     <input value={u} onChange={e => { setU(e.target.value); setErr(''); }} placeholder="Usuario"
                         autoCapitalize="none" autoCorrect="off" autoComplete="username"
                         onKeyDown={e => e.key === 'Enter' && login()}
-                        style={{ width: "100%", background: T.card, border: `1.5px solid ${err ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "12px 16px", fontSize: 14, color: T.text }} />
+                        style={{ width: "100%", background: T.card, border: '1.5px solid ' + err ? '#FECACA' : T.border, borderRadius: T.rsm, padding: "12px 16px", fontSize: 14, color: T.text }} />
                 </Field>
                 <Field label="Contraseña">
                     <div style={{ position: "relative" }}>
                         <input type={showPass ? "text" : "password"} value={p} onChange={e => { setP(e.target.value); setErr(''); }}
                             placeholder="••••••••" autoComplete="current-password"
                             onKeyDown={e => e.key === 'Enter' && login()}
-                            style={{ width: "100%", background: T.card, border: `1.5px solid ${err ? '#FECACA' : T.border}`, borderRadius: T.rsm, padding: "12px 44px 12px 16px", fontSize: 14, color: T.text }} />
+                            style={{ width: "100%", background: T.card, border: '1.5px solid ' + err ? '#FECACA' : T.border, borderRadius: T.rsm, padding: "12px 44px 12px 16px", fontSize: 14, color: T.text }} />
                         <button onClick={() => setShowPass(v => !v)} type="button"
                             style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: showPass ? T.accent : T.muted, padding: 4, display: "flex", alignItems: "center" }}>
                             {showPass
@@ -4287,10 +4360,10 @@ function AppInner() {
                         // Cargar visitas: LOCAL tiene prioridad (pueden tener fotos que Supabase no)
                         const licsConVisitas = await Promise.all(licsBase.map(async l => {
                             // Visitas: buscar en localStorage primero, luego Supabase
-                            const localVis = storage.getLocal(`bcm_lic_vis_${l.id}`);
+                            const localVis = storage.getLocal('bcm_lic_vis_' + l.id);
                             let visitas = localVis?.value ? JSON.parse(localVis.value) : (l.visitas || []);
                             try {
-                                const rv = await storage.get(`bcm_lic_vis_${l.id}`);
+                                const rv = await storage.get('bcm_lic_vis_' + l.id);
                                 if (rv?.value) {
                                     const remoteVis = JSON.parse(rv.value);
                                     // Usar el más completo (más fotos)
@@ -4309,16 +4382,16 @@ function AppInner() {
                     if (obrasBase.length > 0) {
                         const obrasConFotos = await Promise.all(obrasBase.map(async o => {
                             // Fotos: localStorage primero (es la fuente más confiable)
-                            const localFotos = storage.getLocal(`bcm_fotos_${o.id}`);
+                            const localFotos = storage.getLocal('bcm_fotos_' + o.id);
                             let fotos = localFotos?.value ? JSON.parse(localFotos.value) : (o.fotos || []);
-                            const localArchs = storage.getLocal(`bcm_archs_${o.id}`);
+                            const localArchs = storage.getLocal('bcm_archs_' + o.id);
                             let archivos = localArchs?.value ? JSON.parse(localArchs.value) : (o.archivos || []);
                             try {
-                                const rf = await storage.get(`bcm_fotos_${o.id}`);
+                                const rf = await storage.get('bcm_fotos_' + o.id);
                                 if (rf?.value) { const r = JSON.parse(rf.value); if (r.length > fotos.length) fotos = r; }
                             } catch { }
                             try {
-                                const ra = await storage.get(`bcm_archs_${o.id}`);
+                                const ra = await storage.get('bcm_archs_' + o.id);
                                 if (ra?.value) { const r = JSON.parse(ra.value); if (r.length > archivos.length) archivos = r; }
                             } catch { }
                             return { ...o, fotos, archivos };
@@ -4355,7 +4428,7 @@ function AppInner() {
         // Guardar visitas de cada lic en su propia key
         lics.forEach(l => {
             if (!l.visitas?.length) return;
-            const key = `bcm_lic_vis_${l.id}`;
+            const key = 'bcm_lic_vis_' + l.id;
             const vjson = JSON.stringify(l.visitas);
             try { localStorage.setItem(key, vjson); } catch { }
             storage.set(key, vjson).catch(() => { });
@@ -4487,12 +4560,12 @@ function AppInner() {
                 setObras(cur => {
                     cur.forEach(async o => {
                         try {
-                            const rf = await storage.get(`bcm_fotos_${o.id}`);
-                            if (rf?.value) { const loc = storage.getLocal(`bcm_fotos_${o.id}`); if (loc?.value !== rf.value) await applyRemoteKey(`bcm_fotos_${o.id}`, rf.value); }
+                            const rf = await storage.get('bcm_fotos_' + o.id);
+                            if (rf?.value) { const loc = storage.getLocal('bcm_fotos_' + o.id); if (loc?.value !== rf.value) await applyRemoteKey('bcm_fotos_' + o.id, rf.value); }
                         } catch {}
                         try {
-                            const ra = await storage.get(`bcm_archs_${o.id}`);
-                            if (ra?.value) { const loc = storage.getLocal(`bcm_archs_${o.id}`); if (loc?.value !== ra.value) await applyRemoteKey(`bcm_archs_${o.id}`, ra.value); }
+                            const ra = await storage.get('bcm_archs_' + o.id);
+                            if (ra?.value) { const loc = storage.getLocal('bcm_archs_' + o.id); if (loc?.value !== ra.value) await applyRemoteKey('bcm_archs_' + o.id, ra.value); }
                         } catch {}
                     });
                     return cur; // no cambiar el estado, solo leer
@@ -4500,8 +4573,8 @@ function AppInner() {
                 setLics(cur => {
                     cur.forEach(async l => {
                         try {
-                            const rv = await storage.get(`bcm_lic_vis_${l.id}`);
-                            if (rv?.value) { const loc = storage.getLocal(`bcm_lic_vis_${l.id}`); if (loc?.value !== rv.value) await applyRemoteKey(`bcm_lic_vis_${l.id}`, rv.value); }
+                            const rv = await storage.get('bcm_lic_vis_' + l.id);
+                            if (rv?.value) { const loc = storage.getLocal('bcm_lic_vis_' + l.id); if (loc?.value !== rv.value) await applyRemoteKey('bcm_lic_vis_' + l.id, rv.value); }
                         } catch {}
                     });
                     return cur;
@@ -4605,15 +4678,15 @@ function AppInner() {
                 if (doc?.vence) {
                     const d = daysSince(doc.vence);
                     const docLabel = DOC_TYPES.find(x => x.id === did)?.label || did;
-                    if (d < 0) out.push({ id: `doc_${p.id}_${did}`, msg: `📄 ${p.nombre}: ${docLabel} vencido hace ${Math.abs(d)} día${Math.abs(d) !== 1 ? 's' : ''}`, prioridad: 'alta' });
-                    else if (d <= 14) out.push({ id: `doc_${p.id}_${did}`, msg: `📄 ${p.nombre}: ${docLabel} vence en ${d} día${d !== 1 ? 's' : ''}`, prioridad: d <= 3 ? 'alta' : 'media' });
+                    if (d < 0) out.push({ id: 'doc_' + p.id + '_' + did, msg: '\uD83D\uDCC4 ' + p.nombre + ': ' + docLabel + ' vencido hace ' + Math.abs(d) + ' d\u00eda' + (Math.abs(d) !== 1 ? 's' : ''), prioridad: 'alta' });
+                    else if (d <= 14) out.push({ id: 'doc_' + p.id + '_' + did, msg: '\uD83D\uDCC4 ' + p.nombre + ': ' + docLabel + ' vence en ' + d + ' d\u00eda' + (d !== 1 ? 's' : ''), prioridad: d <= 3 ? 'alta' : 'media' });
                 }
             });
             // 2. Documentos obligatorios sin cargar
             DOC_TYPES.forEach(dt => {
                 const doc = p.docs?.[dt.id];
                 if (!doc) {
-                    out.push({ id: `docfalta_${p.id}_${dt.id}`, msg: `📋 ${p.nombre}: le falta cargar ${dt.label}`, prioridad: 'media' });
+                    out.push({ id: 'docfalta_' + p.id + '_' + dt.id, msg: '\uD83D\uDCCB ' + p.nombre + ': le falta cargar ' + dt.label, prioridad: 'media' });
                 }
             });
         });
@@ -4628,12 +4701,12 @@ function AppInner() {
             }
         });
 
-        // 4. Licitaciones en estado "visitar" (pendientes de visita)
+        // 4. Proyectos en estado "visitar" (pendientes de visita)
         lics.filter(l => l.estado === 'visitar').forEach(l => {
-            out.push({ id: `lic_visitar_${l.id}`, msg: `🏗 Licitación pendiente de visita: "${l.nombre}"`, prioridad: 'media' });
+            out.push({ id: `lic_visitar_${l.id}`, msg: `🏗 Proyecto pendiente de visita: "${l.nombre}"`, prioridad: 'media' });
         });
 
-        // 5. Licitaciones en estado "presupuesto" con fecha límite pasada o próxima
+        // 5. Proyectos en estado "presupuesto" con fecha límite pasada o próxima
         lics.filter(l => l.estado === 'presupuesto' && l.fecha).forEach(l => {
             try {
                 const partes = l.fecha.split('/');
@@ -4653,7 +4726,7 @@ function AppInner() {
             } catch { }
         });
 
-        // 6. Licitaciones presentadas sin novedad (más de 30 días)
+        // 6. Proyectos presentadas sin novedad (más de 30 días)
         lics.filter(l => l.estado === 'presentada' && l.fecha).forEach(l => {
             try {
                 const partes = l.fecha.split('/');
@@ -4704,7 +4777,7 @@ function AppInner() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", paddingBottom: showNav ? 72 : 0 }}>
                 {view === 'dashboard' && <Dashboard lics={lics} obras={obras} personal={personal} alerts={alerts} setView={setView} setDetailObraId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} customIcons={cfg.customIcons || {}} planes={planes} setPlanes={setPlanes} />}
                 {view === 'obras' && <Obras obras={obras} setObras={setObras} lics={lics} detailId={detailObraId} setDetailId={setDetailObraId} requireAuth={requireAuth} cfg={cfg} apiKey={apiKey} />}
-                {view === 'licitaciones' && <Licitaciones lics={lics} setLics={setLics} requireAuth={requireAuth} cfg={cfg} obras={obras} setObras={setObras} />}
+                {view === 'licitaciones' && <Licitaciones lics={lics} setLics={setLics} requireAuth={requireAuth} cfg={cfg} obras={obras} setObras={setObras}  />}
                 {view === 'personal' && <Personal personal={personal} setPersonal={setPersonal} obras={obras} cfg={cfg} />}
                 {view === 'cargar' && <CargarView obras={obras} setObras={setObras} cargarState={cargarState} setCargarState={setCargarState} apiKey={apiKey} />}
                 {view === 'chat' && <Chat lics={lics} obras={obras} setObras={setObras} personal={personal} alerts={alerts} cfg={cfg} apiKey={apiKey} />}
@@ -4728,7 +4801,7 @@ function AppInner() {
             </div>
             {showNav && <BottomNav view={view} setView={setView} alerts={alerts} cfg={cfg} />}
             {/* Indicador de conexión en tiempo real — aparece brevemente cuando hay cambios */}
-            {showNav && !realtimeOk && loaded && user && false && (
+            {showNav && !realtimeOk && loaded && false && (
                 <div style={{ position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, zIndex: 99, pointerEvents: "none" }}>
                     <div style={{ display: "flex", justifyContent: "center" }}>
                         <div style={{ background: "rgba(239,68,68,.85)", borderRadius: 20, padding: "3px 12px", display: "flex", alignItems: "center", gap: 5 }}>
