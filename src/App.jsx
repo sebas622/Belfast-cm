@@ -3349,27 +3349,22 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
             try { const r = await fetch('https://wttr.in/Buenos+Aires?format=j1'); if (r.ok) { const d = await r.json(); const c = d.current_condition?.[0]; if (c) extraInfo += `\nClima BsAs: ${c.temp_C}°C, ${c.weatherDesc?.[0]?.value}`; } } catch { }
         }
 
-        const TB = String.fromCharCode(96,96,96);
-        const sys = 'Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.\n' +
+        const sys = 'Sos el asistente IA integrado en la app BelfastCM. Tenés acceso completo a todos los datos en tiempo real.\n' +
             buildContext(txt) + extraInfo + '\n\n' +
-            'Respondé en español rioplatense. Sé conciso y directo.' + (usarBusqueda ? ' Buscá en internet para dar precios y datos actualizados.' : '') + '\n\n' +
-            'CAPACIDADES ESPECIALES — Podés modificar datos de la app directamente:\n' +
-            'Cuando el usuario te pida agregar/modificar algo, respondé con texto normal Y al final incluí un bloque JSON:\n\n' +
-            'Para agregar personal:\n' + TB + 'action\n' +
-            '{"tipo":"agregar_personal","datos":{"nombre":"...","rol":"...","empresa":"BelfastCM","telefono":"...","dni":"...","fechaNac":"..."}}\n' + TB + '\n\n' +
-            'Para actualizar avance de obra:\n' + TB + 'action\n' +
-            '{"tipo":"update_obra","obraId":"...","campo":"avance","valor":75}\n' + TB + '\n\n' +
-            'Si analizás un DNI extraé nombre, DNI, fecha de nacimiento y usá el bloque action para agregar la persona.\n' +
-            'Si el usuario dice "agregá a [nombre] como [rol]", creá la persona con el bloque action.';
+            'Respondé siempre en español rioplatense, de forma concisa y directa.' + (usarBusqueda ? ' Usá internet para datos actualizados.' : '') + '\n\n' +
+            'PODÉS AGREGAR PERSONAS: Cuando el usuario diga "agregá a X como Y" o cuando veas un DNI en una imagen, simplemente agregá la persona. ' +
+            'No expliques que no podés, no pidas confirmación. Solo hacelo e incluí esta línea exacta al final de tu respuesta:\n' +
+            '[[ACTION:{"tipo":"agregar_personal","datos":{"nombre":"NOMBRE_COMPLETO","rol":"ROL","dni":"DNI_SI_HAY","fechaNac":"FECHA_SI_HAY"}}]]\n\n' +
+            'NUNCA digas que no tenés acceso a logs, bases de datos, ni que sos externo. Sos parte de la app, no un sistema separado.';
 
         const r = await callAI(history, sys, apiKey, usarBusqueda);
 
         // Procesar acciones que la IA quiera ejecutar
         const actionTag = String.fromCharCode(96,96,96) + 'action';
         const closeTag = String.fromCharCode(96,96,96);
-        // Detectar bloque action en la respuesta
-        const accionRegex = new RegExp(closeTag + 'action\\n([\\s\\S]*?)\\n' + closeTag);
-        const cleanRegex = new RegExp(closeTag + 'action[\\s\\S]*?' + closeTag, 'g');
+        // Detectar [[ACTION:{...}]] en la respuesta
+        const accionRegex = /\[\[ACTION:([\s\S]*?)\]\]/;
+        const cleanRegex = /\[\[ACTION:[\s\S]*?\]\]/g;
         const accionMatch = r.match(accionRegex);
         let textoLimpio = r.replace(cleanRegex, '').trim();
         let mensajeExtra = '';
@@ -3559,14 +3554,28 @@ function Chat({ lics, obras, setObras, personal, alerts, cfg, apiKey }) {
 
         const sys = 'Sos el asistente IA de BelfastCM para construcción en aeropuertos AA2000.\n' +
             buildContext(txt) + extraInfo + '\n\n' +
-            'Respondé en español rioplatense. Sé conciso y directo. IMPORTANTE: Tenés acceso a búsqueda en internet en tiempo real. Nunca digas que no tenés acceso a internet.';
+            'Respondé en español rioplatense. Sé conciso y directo. Tenés acceso a internet en tiempo real. ' +
+            'Cuando te pidan agregar personal, incluí al final: [[ACTION:{"tipo":"agregar_personal","datos":{"nombre":"...","rol":"...","dni":"...","fechaNac":""}}]] ' +
+            'NUNCA digas que sos externo o que no tenés acceso. Sos parte de la app.';
 
         const r = await callAI(history, sys, apiKey, usarBusqueda);
-        setMsgs(p => [...p, { id: uid(), role: 'assistant', text: r }]);
+        // Procesar acciones del [[ACTION:...]]
+        const accionMatchV = r.match(/\[\[ACTION:([\s\S]*?)\]\]/);
+        let textoFinal = r.replace(/\[\[ACTION:[\s\S]*?\]\]/g, '').trim();
+        if (accionMatchV) {
+            try {
+                const accion = JSON.parse(accionMatchV[1]);
+                if (accion.tipo === 'agregar_personal' && accion.datos?.nombre) {
+                    const nueva = { id: uid(), nombre: accion.datos.nombre, rol: accion.datos.rol || 'Operario', empresa: accion.datos.empresa || 'BelfastCM', telefono: accion.datos.telefono || '', foto: '', obra_id: '', tareas: [], docs: {}, _dni: accion.datos.dni || '', _fechaNac: accion.datos.fechaNac || '' };
+                    setPersonal(p => [...p, nueva]);
+                    textoFinal += '\n\n✅ ' + accion.datos.nombre + ' agregado al personal.';
+                }
+            } catch { }
+        }
+        setMsgs(p => [...p, { id: uid(), role: 'assistant', text: textoFinal }]);
         setLoading(false);
         setLoadingMsg('');
-        // Leer la respuesta en voz alta automáticamente
-        hablarTexto(r);
+        hablarTexto(textoFinal);
     }
 
     if (!askedName && !userName && msgs.length === 0) {
