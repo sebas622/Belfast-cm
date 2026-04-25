@@ -4247,7 +4247,7 @@ function AppInner() {
     const [lics, setLics] = useState(() => getLocalJSON('bcm_lics', []));
     const [obras, setObras] = useState(() => getLocalJSON('bcm_obras', []));
     const [personal, setPersonal] = useState(() => getLocalJSON('bcm_personal', []));
-    const [planes, setPlanes] = useStoredState('bcm_planes_semanales', []);
+    const [planes, setPlanes] = useState(() => getLocalJSON('bcm_planes_semanales', []));
     const [alerts, setAlerts] = useState([]);
     const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CONFIG, ...getLocalJSON('bcm_cfg', {}) }));
     const [apiKey, setApiKey] = useState(() => getLocalStr('bcm_api_key', ''));
@@ -4263,9 +4263,10 @@ function AppInner() {
             try {
                 // 1. Ya tenemos los datos básicos de localStorage (cargados en useState())
                 // 2. Intentar enriquecer con Supabase — solo si Supabase tiene MÁS datos
-                const [rLics, rObras, rPers, rCfg, rKey, rUser] = await Promise.all([
+                const [rLics, rObras, rPers, rCfg, rKey, rUser, rPlanes] = await Promise.all([
                     storage.get('bcm_lics'), storage.get('bcm_obras'), storage.get('bcm_personal'),
                     storage.get('bcm_cfg'), storage.get('bcm_api_key'), storage.get('bcm_current_user'),
+                    storage.get('bcm_planes_semanales'),
                 ]);
 
                 // Licitaciones — solo actualizar si Supabase tiene datos y son distintos
@@ -4317,6 +4318,7 @@ function AppInner() {
 
                 // Personal, config, credenciales — Supabase como fuente de verdad compartida
                 if (rPers?.value) try { const nv = JSON.parse(rPers.value); setPersonal(cur => nv.length >= cur.length ? nv : cur); } catch { }
+                if (rPlanes?.value) try { const nv = JSON.parse(rPlanes.value); setPlanes(cur => nv.length >= cur.length ? nv : cur); } catch { }
                 if (rCfg?.value) try { setCfg(c => ({ ...DEFAULT_CONFIG, ...JSON.parse(rCfg.value) })); } catch { }
                 if (rKey?.value && rKey.value.trim()) setApiKey(rKey.value);
                 if (rUser?.value) try { setUser(JSON.parse(rUser.value)); } catch { }
@@ -4358,6 +4360,7 @@ function AppInner() {
     }, [obras, loaded]);
     useEffect(() => { if (loaded) { markLocalEdit('personal'); storage.set('bcm_personal', JSON.stringify(personal)).catch(() => { }); try { localStorage.setItem('bcm_personal', JSON.stringify(personal)); } catch { } } }, [personal, loaded]);
     useEffect(() => { if (loaded) { markLocalEdit('cfg'); storage.set('bcm_cfg', JSON.stringify(cfg)).catch(() => { }); try { localStorage.setItem('bcm_cfg', JSON.stringify(cfg)); } catch { } } }, [cfg, loaded]);
+    useEffect(() => { if (loaded) { const json = JSON.stringify(planes); storage.set('bcm_planes_semanales', json).catch(() => { }); try { localStorage.setItem('bcm_planes_semanales', json); } catch { } } }, [planes, loaded]);
     useEffect(() => {
         if (!loaded) return;
         // Solo guardar si la API key tiene contenido — no sobrescribir con vacío
